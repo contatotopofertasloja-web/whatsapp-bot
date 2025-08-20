@@ -36,7 +36,6 @@ const LOCALE = pickEnv(['BOT_LOCALE']) || 'pt-BR';
 
 // --- OpenAI client ---
 const openai = new OpenAI({ apiKey: API_KEY });
-
 // --- Express ---
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -144,56 +143,56 @@ function normalizeQrDataUrl(b64) {
 }
 
 // =============== WPPCONNECT ===============
-wppClient = await wppconnect.create({
-  session: SESSION,
+// --- util: garante que o QR vá como data URL válido ---
+function normalizeQrDataUrl(b64) {
+  if (!b64) return '';
+  const s = String(b64).trim();
+  return s.startsWith('data:image') ? s : `data:image/png;base64,${s.replace(/\s/g, '')}`;
+}
 
-  // --- login & sessão ---
-  waitForLogin: true,          // espera o login completar
-  autoClose: 0,                 // nunca fecha sozinho
-  maxAttempts: 3,               // tentativas internas do wppconnect
-  maxQrRetries: 20,             // mais chances de QR válido
-  authTimeout: 120000,          // 120s de janela pro login
-  deviceName: 'Railway Bot',    // nome que aparece no WhatsApp
-  poweredBy: 'WPPConnect',
+async function startWpp() {
+  console.log('[WPP] Inicializando sessão:', SESSION);
 
-  // Persistência em disco (no container) para estabilizar a sessão
-  tokenStore: 'file',           // salva o token em arquivos
-  folderNameToken: 'wpp-store', // pasta onde ficam os tokens
-  deleteSessionToken: false,    // não apaga token ao reiniciar
-  createOnInvalidSession: true, // recria se o token corromper
-  restartOnCrash: true,         // tenta reiniciar o cliente se cair
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
-  // Seus handlers:
-  catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
-    lastQrDataUrl = normalizeQrDataUrl(base64Qr);
-    lastQrAt = Date.now();
-    ready = false;
-    console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-    if (asciiQR) console.log(asciiQR);
-  },
-  statusFind: (statusSession, session) => {
-    console.log('[WPP][Status]', session, statusSession);
-    if (['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession)) {
-      ready = true;
-    }
-  },
+  wppClient = await wppconnect.create({
+    session: SESSION,
 
-  headless: true,
+    // --- login & sessão ---
+    waitForLogin: true,           // espera o login completar
+    autoClose: 0,                 // nunca fecha sozinho
+    maxAttempts: 3,               // tentativas internas do wppconnect
+    maxQrRetries: 20,             // mais chances de QR válido
+    authTimeout: 120000,          // 120s para autenticar
+    deviceName: 'Railway Bot',    // nome exibido no WhatsApp
+    poweredBy: 'WPPConnect',
 
-  // IMPORTANTE em container
-  browserArgs: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--disable-extensions',
-    '--disable-infobars',
-    '--window-size=1280,800',
-  ],
-  puppeteerOptions: {
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-    headless: true, // ou 'new' em algumas imagens
-    args: [
+    // Persistência em disco (dentro do container)
+    tokenStore: 'file',           // salva token em arquivos
+    folderNameToken: 'wpp-store', // pasta /app/wpp-store
+    deleteSessionToken: false,    // não apagar token ao reiniciar
+    createOnInvalidSession: true, // recria se token corromper
+    restartOnCrash: true,         // tenta reiniciar cliente se cair
+
+    // Handlers
+    catchQR: (base64Qr, asciiQR, attempts) => {
+      lastQrDataUrl = normalizeQrDataUrl(base64Qr);
+      lastQrAt = Date.now();
+      ready = false;
+      console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
+      if (asciiQR) console.log(asciiQR);
+    },
+    statusFind: (statusSession, session) => {
+      console.log('[WPP][Status]', session, statusSession);
+      if (['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession)) {
+        ready = true;
+      }
+    },
+
+    headless: true, // nível wppconnect
+
+    // IMPORTANTE em container
+    browserArgs: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
@@ -202,11 +201,62 @@ wppClient = await wppconnect.create({
       '--disable-infobars',
       '--window-size=1280,800',
     ],
-  },
 
-  disableSpins: true,
-  logQR: false,
+    // Puppeteer/Chromium
+    puppeteerOptions: {
+      executablePath,
+      headless: 'new', // inicia mais rápido/estável em container
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-infobars',
+        '--window-size=1280,800',
+      ],
+    },
+
+    disableSpins: true,
+    logQR: false,
+  });
+
+  // Eventos
+  wppClient.onStateChange((state) => {
+    console.log('[WPP][State]', state);
+    if (state === 'CONNECTED') ready = true;
+  });
+
+  wppClient.onMessage(async (message) => {
+    try {
+      if (message.fromMe) return;                    // evita loop
+      if (message.isGroupMsg) return;                // ignora grupos (opcional)
+      const body = (message?.body || message?.caption || '').trim();
+      if (!body) return;
+
+      await wppClient.simulateTyping(message.from, true);
+      const reply = await askOpenAI(body);
+      await wppClient.sendText(message.from, reply);
+      await wppClient.simulateTyping(message.from, false);
+    } catch (err) {
+      console.error('[WPP][onMessage][ERR]', err);
+      try {
+        await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?');
+      } catch (_) {}
+    }
+  });
+
+  console.log('[WPP] Cliente criado.');
+}
+
+// *** importante: start assíncrono depois do HTTP subir ***
+app.listen(PORT, () => {
+  console.log(`[HTTP] Servidor ouvindo em :${PORT}`);
+  startWpp()
+    .then(() => console.log('[BOOT] WPPConnect iniciado com sucesso!'))
+    .catch((err) => console.error('[BOOT][ERR]', err));
 });
+
 
 
 
