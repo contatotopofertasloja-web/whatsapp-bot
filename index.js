@@ -2,8 +2,12 @@
 require('dotenv').config();
 
 // --- OpenAI (GPT) ---
-const OpenAI = require('openai');
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 
 // --- HTTP / Healthcheck ---
 const express = require('express');
