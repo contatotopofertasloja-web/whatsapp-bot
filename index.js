@@ -4,24 +4,29 @@ import "dotenv/config";
 // --- OpenAI (GPT) ---
 import OpenAI from "openai";
 
-// ==== FALLBACK PARA OPENAI_API_KEY ====
+// ==== FALLBACK PARA OPENAI_API_KEY (com trim) ====
 const CANDIDATE_KEYS = [
   "OPENAI_API_KEY",   // nome correto
   "OPENAI_API_KEI",   // typo que vimos
-  "OPENAI_APIKEY",    // variação comum
+  "OPENAI_APIKEY",
   "OPEN_AI_API_KEY",
 ];
 
 let API_KEY = "";
+let USED_NAME = "";
 for (const k of CANDIDATE_KEYS) {
-  if (process.env[k] && process.env[k].startsWith("sk-")) {
-    API_KEY = process.env[k];
-    console.log("Usando variável:", k);
+  const raw = process.env[k];
+  const val = typeof raw === "string" ? raw.trim() : "";
+  if (val) {
+    API_KEY = val;
+    USED_NAME = k;
     break;
   }
 }
-console.log("OPENAI key carregada?", API_KEY.startsWith("sk-"));
+console.log("Usando variável:", USED_NAME || "nenhuma");
+console.log("OPENAI key carregada?", API_KEY.startsWith("sk-"), "prefix:", API_KEY ? API_KEY.slice(0,7) : "n/d");
 // ==== FIM FALLBACK ====
+
 
 // Criação do cliente OpenAI
 const openai = new OpenAI({
