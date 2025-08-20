@@ -138,31 +138,59 @@ async function askOpenAI(userText, contextHints = '') {
 async function startWpp() {
   console.log('[WPP] Inicializando sessão:', SESSION);
 
+  // Usa o Chromium instalado no container (definido no Dockerfile)
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+
   wppClient = await wppconnect.create({
     session: SESSION,
+
     catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
-      // Mantém em memória para /qr
       lastQrDataUrl = `data:image/png;base64,${base64Qr}`;
       lastQrAt = Date.now();
       ready = false;
       console.log(`[WPP][QR] Tentativa ${attempts} | urlCode len=${urlCode?.length || 0}`);
-      // Opcional: exibe ascii no log
       if (asciiQR) console.log(asciiQR);
     },
+
     statusFind: (statusSession, session) => {
       console.log('[WPP][Status]', session, statusSession);
       if (['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession)) {
         ready = true;
       }
     },
+
     headless: true,
-    // Para Railway/containers headless:
-    browserArgs: ['--no-sandbox', '--disable-setuid-sandbox'],
+
+    // Flags essenciais para Chrome headless em container
+    browserArgs: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-infobars',
+      '--window-size=1280,800',
+    ],
+
+    // Garante o uso do Chromium do container
+    puppeteerOptions: {
+      executablePath,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-infobars',
+        '--window-size=1280,800',
+      ],
+    },
+
     disableSpins: true,
     logQR: false,
   });
 
-  // Eventos
+  // Eventos opcionais
   wppClient.onStateChange((state) => {
     console.log('[WPP][State]', state);
     if (state === 'CONNECTED') ready = true;
@@ -170,46 +198,28 @@ async function startWpp() {
 
   wppClient.onMessage(async (message) => {
     try {
-      // Ignore mensagens do próprio bot
-      if (message.fromMe) return;
-
-      // Apenas texto por enquanto
-      const body =
-        (message?.body || '').trim() ||
-        (message?.caption || '').trim();
-
+      if (message.fromMe) return; // evita loop
+      const body = (message?.body || '').trim() || (message?.caption || '').trim();
       if (!body) return;
+      if (message.isGroupMsg) return; // ignore grupos (opcional)
 
-      // Ignora grupos (opcional)
-      if (message.isGroupMsg) {
-        // Se quiser responder em grupos, remova este return
-        return;
-      }
-
-      // Indica "digitando..."
       wppClient.simulateTyping(message.from, true);
-
-      // Chama o GPT
       const reply = await askOpenAI(body);
-
-      // Envia resposta
       await wppClient.sendText(message.from, reply);
-
-      // Para de "digitar"
       wppClient.simulateTyping(message.from, false);
     } catch (err) {
       console.error('[WPP][onMessage][ERR]', err);
       try {
-        await wppClient.sendText(
-          message.from,
-          'Desculpe, tive um erro aqui. Pode repetir a pergunta de outro jeito?'
-        );
+        await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?');
       } catch (_) {}
     }
   });
 
   console.log('[WPP] Cliente criado.');
 }
+
+
+
 
 // =============== START SERVER ===============
 app.listen(PORT, async () => {
