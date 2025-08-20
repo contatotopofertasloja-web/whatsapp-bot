@@ -180,6 +180,8 @@ autoClose: 0,                // nunca fecha sozinho
     // Persistência
     tokenStore: 'file',
     folderNameToken: 'wpp-store',
+folderNameToken: 'wpp-store', // já configurado
+
     deleteSessionToken: false,
     createOnInvalidSession: true,
     restartOnCrash: true,
