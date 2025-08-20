@@ -1,13 +1,19 @@
 {
   "name": "whatsapp-bot",
   "version": "1.0.0",
+  "description": "",
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.37.3",
     "dotenv": "^17.2.1",
