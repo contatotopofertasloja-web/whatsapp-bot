@@ -4,6 +4,13 @@ import "dotenv/config";
 // --- OpenAI (GPT) ---
 import OpenAI from "openai";
 
+// Debug: verificar se a chave chegou no runtime (sem expor a chave inteira)
+const hasKey = !!process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.startsWith("sk-");
+console.log("OPENAI_API_KEY presente?", hasKey);
+if (!hasKey) {
+  console.log("Variáveis que contêm 'openai' no nome:", Object.keys(process.env).filter(k => k.toLowerCase().includes("openai")));
+  console.log("Prefixo da chave (se existir):", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0, 7) : "n/d");
+}
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
