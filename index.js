@@ -1,5 +1,5 @@
 // --- Carrega variáveis do .env ---
-require('dotenv').config();
+import "dotenv/config";
 
 // --- OpenAI (GPT) ---
 import OpenAI from "openai";
