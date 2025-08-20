@@ -27,6 +27,7 @@ console.log("Usando variável:", USED_NAME || "nenhuma");
 console.log("OPENAI key carregada?", API_KEY.startsWith("sk-"), "prefix:", API_KEY ? API_KEY.slice(0,7) : "n/d");
 // ==== FIM FALLBACK ====
 
+console.log("HELLO env =", process.env.HELLO || "n/d");
 
 // Criação do cliente OpenAI
 const openai = new OpenAI({
