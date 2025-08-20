@@ -40,18 +40,19 @@ const app = express();
 app.get("/", (req, res) => res.send("Bot rodando com sucesso 🚀"));
 app.listen(3000, () => console.log("Servidor ativo na porta 3000"));
 
-// Teste rápido de GPT no startup (log apenas; não quebra o servidor)
+
+// Teste rápido do GPT no startup (só loga; não derruba o servidor)
 setTimeout(async () => {
   try {
-    const r = await openai.chat.completions.create({
+    const r = await openai.responses.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: "Responda apenas: ok" }],
+      input: "Responda apenas: ok",
       temperature: 0,
     });
-    console.log("GPT ok:", r.choices?.[0]?.message?.content || "(vazio)");
+
+    let out = r.output_text || r.choices?.[0]?.message?.content || "";
+    console.log("GPT ok:", out || "(vazio)");
   } catch (err) {
-    const msg = err?.response?.data || err?.message || String(err);
-    console.error("GPT erro:", msg);
+    console.error("GPT erro:", err?.status || "", err?.message || "", err?.response?.data || "");
   }
 }, 500);
-
