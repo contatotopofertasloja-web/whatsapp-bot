@@ -144,35 +144,56 @@ function normalizeQrDataUrl(b64) {
 }
 
 // =============== WPPCONNECT ===============
-async function startWpp() {
-  console.log('[WPP] Inicializando sessão:', SESSION);
+wppClient = await wppconnect.create({
+  session: SESSION,
 
-  // Usa o Chromium instalado no container (definido no Dockerfile)
-  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+  // --- login & sessão ---
+  waitForLogin: true,          // espera o login completar
+  autoClose: 0,                 // nunca fecha sozinho
+  maxAttempts: 3,               // tentativas internas do wppconnect
+  maxQrRetries: 20,             // mais chances de QR válido
+  authTimeout: 120000,          // 120s de janela pro login
+  deviceName: 'Railway Bot',    // nome que aparece no WhatsApp
+  poweredBy: 'WPPConnect',
 
-  wppClient = await wppconnect.create({
-    session: SESSION,
+  // Persistência em disco (no container) para estabilizar a sessão
+  tokenStore: 'file',           // salva o token em arquivos
+  folderNameToken: 'wpp-store', // pasta onde ficam os tokens
+  deleteSessionToken: false,    // não apaga token ao reiniciar
+  createOnInvalidSession: true, // recria se o token corromper
+  restartOnCrash: true,         // tenta reiniciar o cliente se cair
 
-   catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
-  lastQrDataUrl = normalizeQrDataUrl(base64Qr);
-  lastQrAt = Date.now();
-  ready = false;
-  console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-  if (asciiQR) console.log(asciiQR);
-},
+  // Seus handlers:
+  catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
+    lastQrDataUrl = normalizeQrDataUrl(base64Qr);
+    lastQrAt = Date.now();
+    ready = false;
+    console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
+    if (asciiQR) console.log(asciiQR);
+  },
+  statusFind: (statusSession, session) => {
+    console.log('[WPP][Status]', session, statusSession);
+    if (['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession)) {
+      ready = true;
+    }
+  },
 
+  headless: true,
 
-    statusFind: (statusSession, session) => {
-      console.log('[WPP][Status]', session, statusSession);
-      if (['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession)) {
-        ready = true;
-      }
-    },
-
-    headless: true,
-
-    // Flags essenciais para Chrome headless em container
-    browserArgs: [
+  // IMPORTANTE em container
+  browserArgs: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--disable-infobars',
+    '--window-size=1280,800',
+  ],
+  puppeteerOptions: {
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+    headless: true, // ou 'new' em algumas imagens
+    args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
@@ -181,53 +202,11 @@ async function startWpp() {
       '--disable-infobars',
       '--window-size=1280,800',
     ],
+  },
 
-    // Garante o uso do Chromium do container
-    puppeteerOptions: {
-      executablePath,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-infobars',
-        '--window-size=1280,800',
-      ],
-    },
-
-    disableSpins: true,
-    logQR: false,
-  });
-
-  // Eventos opcionais
-  wppClient.onStateChange((state) => {
-    console.log('[WPP][State]', state);
-    if (state === 'CONNECTED') ready = true;
-  });
-
-  wppClient.onMessage(async (message) => {
-    try {
-      if (message.fromMe) return; // evita loop
-      const body = (message?.body || '').trim() || (message?.caption || '').trim();
-      if (!body) return;
-      if (message.isGroupMsg) return; // ignore grupos (opcional)
-
-      wppClient.simulateTyping(message.from, true);
-      const reply = await askOpenAI(body);
-      await wppClient.sendText(message.from, reply);
-      wppClient.simulateTyping(message.from, false);
-    } catch (err) {
-      console.error('[WPP][onMessage][ERR]', err);
-      try {
-        await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?');
-      } catch (_) {}
-    }
-  });
-
-  console.log('[WPP] Cliente criado.');
-}
-
+  disableSpins: true,
+  logQR: false,
+});
 
 
 
