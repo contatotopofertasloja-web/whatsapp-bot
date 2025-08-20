@@ -31,3 +31,21 @@ app.get("/", (req, res) => res.send("ok"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor ativo na porta ${PORT}`));
+
+
+// rota de saúde
+app.get('/health', (_, res) => res.json({ ok: true }));
+
+// teste do GPT
+app.get('/gpt-test', async (_, res) => {
+  try {
+    const r = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'Diga apenas: OK' }],
+      temperature: 0
+    });
+    res.json({ reply: r.choices[0].message.content });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
