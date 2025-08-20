@@ -4,135 +4,32 @@ import "dotenv/config";
 // --- OpenAI (GPT) ---
 import OpenAI from "openai";
 
-// Debug: verificar se a chave chegou no runtime (sem expor a chave inteira)
-const hasKey = !!process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.startsWith("sk-");
-console.log("OPENAI_API_KEY presente?", hasKey);
-if (!hasKey) {
-  console.log("Variáveis que contêm 'openai' no nome:", Object.keys(process.env).filter(k => k.toLowerCase().includes("openai")));
-  console.log("Prefixo da chave (se existir):", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0, 7) : "n/d");
+// ==== FALLBACK PARA OPENAI_API_KEY ====
+const CANDIDATE_KEYS = [
+  "OPENAI_API_KEY",   // nome correto
+  "OPENAI_API_KEI",   // typo que vimos
+  "OPENAI_APIKEY",    // variação comum
+  "OPEN_AI_API_KEY",
+];
+
+let API_KEY = "";
+for (const k of CANDIDATE_KEYS) {
+  if (process.env[k] && process.env[k].startsWith("sk-")) {
+    API_KEY = process.env[k];
+    console.log("Usando variável:", k);
+    break;
+  }
 }
+console.log("OPENAI key carregada?", API_KEY.startsWith("sk-"));
+// ==== FIM FALLBACK ====
 
-// ==== DEBUG ENV (temporário) ====
-const envKeys = Object.keys(process.env);
-console.log("TOTAL_ENV_KEYS", envKeys.length);
-
-// Liste todas as chaves que contenham "open" no nome
-const openKeys = envKeys.filter(k => k.toLowerCase().includes("open"));
-console.log("ENV_MATCH_OPEN", openKeys);
-
-// Mostre cada nome com os códigos ASCII (pega espaço oculto, acentos etc)
-openKeys.forEach(k => {
-  console.log("ENV_KEY_DETAIL", JSON.stringify(k), "LEN", k.length, "CODES", [...k].map(ch => ch.charCodeAt(0)));
-});
-
-// Checagem final da nossa chave
-const hasKey = !!process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.startsWith("sk-");
-console.log("OPENAI_API_KEY_PRESENT", hasKey);
-if (!hasKey) {
-  console.log("OPENAI_API_KEY_PREFIX", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0,7) : "n/d");
-}
-// ==== FIM DEBUG ====
-
-
-
+// Criação do cliente OpenAI
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: API_KEY,
 });
-
-
 
 // --- HTTP / Healthcheck ---
-const express = require('express');
+import express from "express";
 const app = express();
-app.get('/health', (_, res) => res.send('ok'));
-
-// --- WhatsApp (WPPConnect) ---
-const { create } = require('@wppconnect-team/wppconnect');
-
-// Flags importantes p/ rodar em servidor (Railway/Render/VPS)
-const browserArgs = ['--no-sandbox', '--disable-setuid-sandbox'];
-
-// Configs vindas do .env (com padrões seguros)
-const WPP_SESSION = process.env.WPP_SESSION || 'default';
-const WPP_HEADLESS = (process.env.WPP_HEADLESS || 'true') === 'true';
-const PORT = process.env.PORT || 3000;
-
-// Inicia o cliente do WhatsApp
-create({
-  session: WPP_SESSION,
-  headless: WPP_HEADLESS,
-  browserArgs,
-  // salva sessão em disco (opcional: mudar caminho via .env)
-  puppeteerOptions: {
-    args: browserArgs,
-  },
-  // Loga o QR em base64 como Data URL (copiar dos logs e abrir no navegador)
-  catchQR: (base64Qr /*, asciiQR, attempts, urlCode */) => {
-    console.log('===================== QR CODE =====================');
-    console.log('Abra esta URL no navegador e escaneie no celular:');
-    console.log('data:image/png;base64,' + base64Qr);
-    console.log('===================================================');
-  },
-})
-  .then((client) => {
-    console.log('✅ Bot do WhatsApp iniciado! Sessão:', WPP_SESSION);
-
-    // --- ÚNICO handler de mensagens ---
-    client.onMessage(async (message) => {
-      try {
-        // Ignora grupos e mensagens vazias
-        if (message.isGroupMsg) return;
-        const userText = (message.body || '').trim();
-        if (!userText) return;
-
-        console.log('📩 Mensagem recebida:', userText);
-
-        // Chama GPT (modelo leve e barato)
-        const completion = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          temperature: 0.5,
-          max_tokens: 300,
-          messages: [
-            {
-              role: 'system',
-              content:
-                'Você é um assistente de vendas da TopOfertas no WhatsApp. ' +
-                'Responda de forma curta, clara e amigável, no idioma do cliente. ' +
-                'Se perguntarem sobre entrega/prazo, peça o CEP. ' +
-                'Quando fizer sentido, ofereça enviar o link do checkout.',
-            },
-            { role: 'user', content: userText },
-          ],
-        });
-
-        const reply =
-          completion.choices?.[0]?.message?.content?.trim() ||
-          'Consegui te entender, mas pode detalhar um pouco mais?';
-
-        await client.sendText(message.from, reply);
-      } catch (error) {
-        console.error('❌ Erro ao falar com GPT:', error?.message || error);
-        try {
-          await client.sendText(
-            message.from,
-            '⚠️ Tive um probleminha técnico agora. Pode tentar de novo?'
-          );
-        } catch (_) {}
-      }
-    });
-
-    // (opcional) log quando a sessão muda de status
-    client.onStateChange((state) => {
-      console.log('ℹ️ Estado da sessão:', state);
-    });
-  })
-  .catch((error) => {
-    console.error('❌ Erro ao iniciar WPPConnect:', error?.message || error);
-    process.exitCode = 1;
-  });
-
-// --- Sobe servidor HTTP (healthcheck) ---
-app.listen(PORT, () => {
-  console.log(`🟢 Servidor HTTP rodando na porta ${PORT}`);
-});
-
+app.get("/", (req, res) => res.send("Bot rodando com sucesso 🚀"));
+app.listen(3000, () => console.log("Servidor ativo na porta 3000"));
