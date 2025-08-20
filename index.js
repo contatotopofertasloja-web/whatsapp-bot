@@ -11,9 +11,34 @@ if (!hasKey) {
   console.log("Variáveis que contêm 'openai' no nome:", Object.keys(process.env).filter(k => k.toLowerCase().includes("openai")));
   console.log("Prefixo da chave (se existir):", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0, 7) : "n/d");
 }
+
+// ==== DEBUG ENV (temporário) ====
+const envKeys = Object.keys(process.env);
+console.log("TOTAL_ENV_KEYS", envKeys.length);
+
+// Liste todas as chaves que contenham "open" no nome
+const openKeys = envKeys.filter(k => k.toLowerCase().includes("open"));
+console.log("ENV_MATCH_OPEN", openKeys);
+
+// Mostre cada nome com os códigos ASCII (pega espaço oculto, acentos etc)
+openKeys.forEach(k => {
+  console.log("ENV_KEY_DETAIL", JSON.stringify(k), "LEN", k.length, "CODES", [...k].map(ch => ch.charCodeAt(0)));
+});
+
+// Checagem final da nossa chave
+const hasKey = !!process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.startsWith("sk-");
+console.log("OPENAI_API_KEY_PRESENT", hasKey);
+if (!hasKey) {
+  console.log("OPENAI_API_KEY_PREFIX", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0,7) : "n/d");
+}
+// ==== FIM DEBUG ====
+
+
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
 
 
 // --- HTTP / Healthcheck ---
