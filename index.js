@@ -6,28 +6,27 @@ import express from 'express';
 import OpenAI from 'openai';
 import wppconnect from '@wppconnect-team/wppconnect';
 
-// =============== UTIL / CONFIG ===============
+// --- Hardening contra crashes não tratados ---
+process.on('unhandledRejection', (err) => {
+  console.error('[FATAL][unhandledRejection]', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL][uncaughtException]', err);
+});
+
+// --- Utils / ENV helpers ---
 const pickEnv = (names) => {
   for (const k of names) {
     let v = process.env[k];
     if (typeof v !== 'string') continue;
-    v = v.trim().replace(/^['"]|['"]$/g, ''); // remove aspas acidentais
+    v = v.trim().replace(/^['"]|['"]$/g, '');
     if (v) return v;
   }
   return '';
 };
 
-const API_KEY = pickEnv([
-  'OPENAI_API_KEY',
-  'OPENAI_API_KEI',
-  'OPENAI_APIKEY',
-  'OPEN_AI_API_KEY',
-]);
-
-if (!API_KEY) {
-  console.warn('[WARN] OPENAI_API_KEY não encontrado nas ENV vars.');
-}
-
+// --- Config ---
+const API_KEY = pickEnv(['OPENAI_API_KEY', 'OPENAI_API_KEI', 'OPENAI_APIKEY', 'OPEN_AI_API_KEY']);
 const MODEL = pickEnv(['OPENAI_MODEL', 'MODEL']) || 'gpt-4o-mini';
 const PORT = Number(process.env.PORT || 3000);
 const SESSION = pickEnv(['WPP_SESSION', 'SESSION_NAME']) || 'railway-bot';
@@ -36,17 +35,18 @@ const LOCALE = pickEnv(['BOT_LOCALE']) || 'pt-BR';
 
 // --- OpenAI client ---
 const openai = new OpenAI({ apiKey: API_KEY });
-// --- Express ---
+
+// --- Express app ---
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// Estado simples em memória
-let lastQrDataUrl = '';          // data:image/png;base64,....
-let lastQrAt = 0;                 // Date.now()
+// --- Estado em memória ---
+let lastQrDataUrl = ''; // data:image/png;base64,..
+let lastQrAt = 0;
 let wppClient = null;
 let ready = false;
 
-// =============== ROTAS HTTP ===============
+// --- Rotas básicas ---
 app.get('/', (_, res) => res.send('OK'));
 app.get('/health', (_, res) => res.json({ ok: true, wppReady: ready }));
 
@@ -56,35 +56,27 @@ app.get('/gpt-test', async (_, res) => {
       model: MODEL,
       messages: [
         { role: 'system', content: 'Responda "OK" e nada mais.' },
-        { role: 'user', content: 'teste' },
+        { role: 'user', content: 'ping' },
       ],
     });
-    const reply = r.choices?.[0]?.message?.content ?? 'OK';
-    res.json({ reply });
+    res.json({ reply: r.choices?.[0]?.message?.content ?? 'OK' });
   } catch (e) {
     console.error('[GPT-TEST]', e);
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
-// Página do QR com auto-refresh
-
-// ================== QR ENDPOINTS (cole este bloco e remova o /qr antigo) ==================
-
-// Serve somente a imagem do QR em PNG (leve e rápido)
+// ================== QR ENDPOINTS (leve e estável) ==================
+// Serve somente a imagem PNG do QR (evita HTML gigante com base64)
 app.get('/qr.png', (req, res) => {
   try {
-    // Se já conectou ou ainda não gerou QR, não há imagem pra mostrar
     if (ready || !lastQrDataUrl) {
       res.status(204).end(); // No Content
       return;
     }
-
-    // lastQrDataUrl é um data URL "data:image/png;base64,...."
     const idx = lastQrDataUrl.indexOf(',');
     const b64 = idx >= 0 ? lastQrDataUrl.slice(idx + 1) : lastQrDataUrl;
     const buf = Buffer.from(b64, 'base64');
-
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.send(buf);
@@ -94,7 +86,7 @@ app.get('/qr.png', (req, res) => {
   }
 });
 
-// Página HTML do QR (referencia a imagem acima e auto-atualiza)
+// Página HTML que referencia a imagem acima e auto-atualiza
 app.get('/qr', (_, res) => {
   const hasQr = !!lastQrDataUrl && Date.now() - lastQrAt < 5 * 60 * 1000;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -135,19 +127,22 @@ app.get('/qr', (_, res) => {
 </body>
 </html>`);
 });
-// ==========================================================================================
+// ================== FIM QR ENDPOINTS ==================
 
+// --- Utils ---
+function normalizeQrDataUrl(b64) {
+  if (!b64) return '';
+  const s = String(b64).trim();
+  return s.startsWith('data:image') ? s : `data:image/png;base64,${s.replace(/\s/g, '')}`;
+}
 
-
-// =============== FUNÇÕES GPT ===============
 async function askOpenAI(userText, contextHints = '') {
   const sys = `Você é ${BOT_NAME}, um assistente de atendimento via WhatsApp.
-- Idioma padrão: ${LOCALE}.
-- Seja claro, curto e útil.
-- Evite respostas muito longas em mensagens únicas.
-- Se a pergunta for sobre status de pedido/entrega, solicite dados essenciais (nome, telefone, email, nº do pedido) de forma objetiva.`;
+- Idioma: ${LOCALE}.
+- Seja claro e objetivo, evitando textões.
+- Para dúvidas de pedido/entrega, peça apenas os dados essenciais (nome, telefone, email, nº do pedido).`;
 
-  const msgs = [
+  const messages = [
     { role: 'system', content: sys },
     ...(contextHints ? [{ role: 'system', content: `Contexto: ${contextHints}` }] : []),
     { role: 'user', content: userText || 'Olá' },
@@ -155,54 +150,38 @@ async function askOpenAI(userText, contextHints = '') {
 
   const r = await openai.chat.completions.create({
     model: MODEL,
-    messages: msgs,
     temperature: 0.3,
     max_tokens: 400,
+    messages,
   });
-
   return r.choices?.[0]?.message?.content?.trim() || 'Certo!';
 }
-// =============== Ajsutar o qrcodeT ===============
 
-function normalizeQrDataUrl(b64) {
-  if (!b64) return '';
-  const s = String(b64).trim();
-  if (s.startsWith('data:image')) return s; // já é data URL
-  // caso o WPPConnect envie apenas o base64 "puro"
-  return `data:image/png;base64,${s.replace(/\s/g, '')}`;
-}
-
-// =============== WPPCONNECT ===============
-// --- util: garante que o QR vá como data URL válido ---
-function normalizeQrDataUrl(b64) {
-  if (!b64) return '';
-  const s = String(b64).trim();
-  return s.startsWith('data:image') ? s : `data:image/png;base64,${s.replace(/\s/g, '')}`;
-}
-
+// --- WPPConnect ---
 async function startWpp() {
   console.log('[WPP] Inicializando sessão:', SESSION);
-
   const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
-  wppClient = await wppconnect.create({
+  const client = await wppconnect.create({
     session: SESSION,
 
-    // --- login & sessão ---
-    waitForLogin: true,           // espera o login completar
-    autoClose: 0,                 // nunca fecha sozinho
-    maxAttempts: 3,               // tentativas internas do wppconnect
-    maxQrRetries: 20,             // mais chances de QR válido
-    authTimeout: 120000,          // 120s para autenticar
-    deviceName: 'Railway Bot',    // nome exibido no WhatsApp
+    // Login / sessão
+    waitForLogin: true,
+    autoClose: 0,
+    maxAttempts: 3,
+    maxQrRetries: 20,
+    authTimeout: 120000,
+    deviceName: 'Railway Bot',
     poweredBy: 'WPPConnect',
 
-    // Persistência em disco (dentro do container)
-    tokenStore: 'file',           // salva token em arquivos
-    folderNameToken: 'wpp-store', // pasta /app/wpp-store
-    deleteSessionToken: false,    // não apagar token ao reiniciar
-    createOnInvalidSession: true, // recria se token corromper
-    restartOnCrash: true,         // tenta reiniciar cliente se cair
+    // Persistência
+    tokenStore: 'file',
+    folderNameToken: 'wpp-store',
+    deleteSessionToken: false,
+    createOnInvalidSession: true,
+    restartOnCrash: true,
+    killProcessOnBrowserClose: false,
+    shutdownOnCrash: false,
 
     // Handlers
     catchQR: (base64Qr, asciiQR, attempts) => {
@@ -210,40 +189,31 @@ async function startWpp() {
       lastQrAt = Date.now();
       ready = false;
       console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-      if (asciiQR) console.log(asciiQR);
+      // if (asciiQR) console.log(asciiQR); // silencie o ASCII (gigante)
     },
     statusFind: (statusSession, session) => {
       console.log('[WPP][Status]', session, statusSession);
-      if (['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession)) {
-        ready = true;
-      }
+      ready = ['isLogged', 'qrReadSuccess', 'chatsAvailable'].includes(statusSession);
+    },
+    onLoadingScreen: (percent, message) => {
+      console.log('[WPP][Loading]', percent, message);
     },
 
-    headless: true, // nível wppconnect
+    headless: true,
 
-    // IMPORTANTE em container
+    // Chromium (container-friendly)
     browserArgs: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--disable-infobars',
-      '--window-size=1280,800',
+      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--disable-extensions', '--disable-infobars',
+      '--window-size=1280,800', '--single-process', '--no-zygote'
     ],
-
-    // Puppeteer/Chromium
     puppeteerOptions: {
       executablePath,
-      headless: 'new', // inicia mais rápido/estável em container
+      headless: 'new',
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-infobars',
-        '--window-size=1280,800',
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        '--disable-gpu', '--disable-extensions', '--disable-infobars',
+        '--window-size=1280,800', '--single-process', '--no-zygote'
       ],
     },
 
@@ -251,16 +221,28 @@ async function startWpp() {
     logQR: false,
   });
 
-  // Eventos
+  wppClient = client;
+
+  // Eventos de estado
   wppClient.onStateChange((state) => {
     console.log('[WPP][State]', state);
     if (state === 'CONNECTED') ready = true;
+    if (['CONFLICT', 'UNPAIRED', 'UNLAUNCHED', 'DISCONNECTED'].includes(state)) {
+      ready = false;
+    }
   });
 
+  wppClient.onLogout(() => {
+    console.error('[WPP] Logout detectado. Reiniciando cliente...');
+    ready = false;
+    setTimeout(() => startWpp().catch(e => console.error('[WPP][restart][ERR]', e)), 2000);
+  });
+
+  // Mensagens
   wppClient.onMessage(async (message) => {
     try {
-      if (message.fromMe) return;                    // evita loop
-      if (message.isGroupMsg) return;                // ignora grupos (opcional)
+      if (message.fromMe) return;
+      if (message.isGroupMsg) return; // remova se quiser grupos
       const body = (message?.body || message?.caption || '').trim();
       if (!body) return;
 
@@ -270,16 +252,14 @@ async function startWpp() {
       await wppClient.simulateTyping(message.from, false);
     } catch (err) {
       console.error('[WPP][onMessage][ERR]', err);
-      try {
-        await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?');
-      } catch (_) {}
+      try { await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?'); } catch (_) {}
     }
   });
 
   console.log('[WPP] Cliente criado.');
 }
 
-// *** importante: start assíncrono depois do HTTP subir ***
+// --- Start HTTP primeiro; WPP inicia assíncrono (evita timeout no Railway) ---
 app.listen(PORT, () => {
   console.log(`[HTTP] Servidor ouvindo em :${PORT}`);
   startWpp()
@@ -287,20 +267,7 @@ app.listen(PORT, () => {
     .catch((err) => console.error('[BOOT][ERR]', err));
 });
 
-
-
-
-// =============== START SERVER ===============
-app.listen(PORT, async () => {
-  console.log(`[HTTP] Servidor ouvindo em :${PORT}`);
-  try {
-    await startWpp();
-  } catch (e) {
-    console.error('[BOOT][ERR]', e);
-  }
-});
-
-// =============== SHUTDOWN LIMPO ===============
+// --- Shutdown limpo ---
 async function shutdown(sig) {
   console.log(`[SYS] Recebido ${sig}, finalizando...`);
   try {
@@ -311,6 +278,5 @@ async function shutdown(sig) {
     process.exit(0);
   }
 }
-
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
