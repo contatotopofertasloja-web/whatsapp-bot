@@ -68,6 +68,33 @@ app.get('/gpt-test', async (_, res) => {
 });
 
 // Página do QR com auto-refresh
+
+// ================== QR ENDPOINTS (cole este bloco e remova o /qr antigo) ==================
+
+// Serve somente a imagem do QR em PNG (leve e rápido)
+app.get('/qr.png', (req, res) => {
+  try {
+    // Se já conectou ou ainda não gerou QR, não há imagem pra mostrar
+    if (ready || !lastQrDataUrl) {
+      res.status(204).end(); // No Content
+      return;
+    }
+
+    // lastQrDataUrl é um data URL "data:image/png;base64,...."
+    const idx = lastQrDataUrl.indexOf(',');
+    const b64 = idx >= 0 ? lastQrDataUrl.slice(idx + 1) : lastQrDataUrl;
+    const buf = Buffer.from(b64, 'base64');
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.send(buf);
+  } catch (e) {
+    console.error('[QR.PNG][ERR]', e);
+    res.status(500).end();
+  }
+});
+
+// Página HTML do QR (referencia a imagem acima e auto-atualiza)
 app.get('/qr', (_, res) => {
   const hasQr = !!lastQrDataUrl && Date.now() - lastQrAt < 5 * 60 * 1000;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -82,7 +109,7 @@ app.get('/qr', (_, res) => {
   .card { max-width: 420px; margin: 0 auto; background:#121826; border:1px solid #26304a; border-radius:16px; padding:20px; text-align:center; }
   img { width: 100%; height:auto; border-radius:12px; }
   .muted { color:#9fb0c6; font-size:14px; margin-top:8px; }
-  .badge { display:inline-block; margin: 0 6px; padding:4px 10px; border-radius: 999px; background:#1d263b; color:#c3d1e9; font-size:12px; border:1px solid #2a3552; }
+  .badge { display:inline-block; margin: 0 6px; padding:4px 10px; border-radius:999px; background:#1d263b; color:#c3d1e9; font-size:12px; border:1px solid #2a3552; }
   .grid { display:flex; gap:8px; justify-content:center; margin-top:10px; flex-wrap:wrap; }
 </style>
 </head>
@@ -98,8 +125,8 @@ app.get('/qr', (_, res) => {
         ready
           ? '<p>✅ Cliente já conectado. Você pode fechar esta página.</p>'
           : hasQr
-            ? `<img src="${lastQrDataUrl}" alt="QR Code" />`
-            : '<p>Gerando QR… se não aparecer, aguarde alguns segundos e esta página recarregará sozinha.</p>'
+              ? '<img src="/qr.png?ts=' + Date.now() + '" alt="QR Code" />'
+              : '<p>Gerando QR… se não aparecer, aguarde alguns segundos e esta página recarregará sozinha.</p>'
       }
     </div>
     <p class="muted">Esta página recarrega automaticamente a cada 5 segundos.</p>
@@ -108,6 +135,9 @@ app.get('/qr', (_, res) => {
 </body>
 </html>`);
 });
+// ==========================================================================================
+
+
 
 // =============== FUNÇÕES GPT ===============
 async function askOpenAI(userText, contextHints = '') {
