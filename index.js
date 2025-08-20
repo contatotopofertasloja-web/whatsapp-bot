@@ -169,8 +169,11 @@ async function startWpp() {
     waitForLogin: true,
     autoClose: 0,
     maxAttempts: 3,
-    maxQrRetries: 20,
-    authTimeout: 120000,
+    maxQrRetries: 9999,          // mantém a mesma sessão até conectar
+qrTimeout: 0,                // QR não expira (espera indefinidamente)
+authTimeout: 0,              // dá tempo ilimitado pro login
+autoClose: 0,                // nunca fecha sozinho
+    
     deviceName: 'Railway Bot',
     poweredBy: 'WPPConnect',
 
