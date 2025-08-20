@@ -133,6 +133,15 @@ async function askOpenAI(userText, contextHints = '') {
 
   return r.choices?.[0]?.message?.content?.trim() || 'Certo!';
 }
+// =============== Ajsutar o qrcodeT ===============
+
+function normalizeQrDataUrl(b64) {
+  if (!b64) return '';
+  const s = String(b64).trim();
+  if (s.startsWith('data:image')) return s; // já é data URL
+  // caso o WPPConnect envie apenas o base64 "puro"
+  return `data:image/png;base64,${s.replace(/\s/g, '')}`;
+}
 
 // =============== WPPCONNECT ===============
 async function startWpp() {
@@ -144,13 +153,14 @@ async function startWpp() {
   wppClient = await wppconnect.create({
     session: SESSION,
 
-    catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
-      lastQrDataUrl = `data:image/png;base64,${base64Qr}`;
-      lastQrAt = Date.now();
-      ready = false;
-      console.log(`[WPP][QR] Tentativa ${attempts} | urlCode len=${urlCode?.length || 0}`);
-      if (asciiQR) console.log(asciiQR);
-    },
+   catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
+  lastQrDataUrl = normalizeQrDataUrl(base64Qr);
+  lastQrAt = Date.now();
+  ready = false;
+  console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
+  if (asciiQR) console.log(asciiQR);
+},
+
 
     statusFind: (statusSession, session) => {
       console.log('[WPP][Status]', session, statusSession);
