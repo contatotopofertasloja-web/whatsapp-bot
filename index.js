@@ -5,6 +5,8 @@ import 'dotenv/config';
 import express from 'express';
 import OpenAI from 'openai';
 import wppconnect from '@wppconnect-team/wppconnect';
+import fs from 'fs';
+import path from 'path';
 
 // --- Hardening ---
 process.on('unhandledRejection', (e) => console.error('[FATAL][unhandledRejection]', e));
@@ -28,6 +30,9 @@ const MODEL    = pickEnv(['OPENAI_MODEL','MODEL']) || 'gpt-4o-mini';
 const BOT_NAME = pickEnv(['BOT_NAME']) || 'TopBot';
 const LOCALE   = pickEnv(['BOT_LOCALE']) || 'pt-BR';
 const API_KEY  = pickEnv(['OPENAI_API_KEY','OPENAI_API_KEI','OPENAI_APIKEY','OPEN_AI_API_KEY']);
+
+// Versões estáveis do WhatsApp Web (ladder pra destravar "Sincronizando...")
+const WA_VERSIONS = ['2.3000.1013', '2.3000.10243', '2.2412.54'];
 
 // --- OpenAI ---
 const openai = new OpenAI({ apiKey: API_KEY });
@@ -121,16 +126,33 @@ app.get('/qr-page', (_, res) => {
 });
 // ======== fim QR endpoints ========
 
+// ======== Reset de sessão (apaga token e reinicia) ========
+app.post('/reset-session', async (_, res) => {
+  try {
+    const dir = path.join(process.cwd(), 'wpp-store', SESSION);
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    try { await wppClient?.close(); } catch {}
+    ready = false; lastQrDataUrl = ''; lastQrAt = 0;
+    setTimeout(() => startWpp().catch(e => console.error('[WPP][reset][ERR]', e)), 500);
+    res.json({ ok:true, reset:true });
+  } catch (e) {
+    console.error('[RESET][ERR]', e);
+    res.status(500).json({ ok:false, error:String(e?.message||e) });
+  }
+});
+// ==========================================================
+
 // --- WPPConnect ---
-async function startWpp() {
-  console.log('[WPP] Inicializando sessão:', SESSION);
+async function startWpp(versionIdx = 0) {
   const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+  const whatsappVersion = WA_VERSIONS[versionIdx] || WA_VERSIONS[0];
+  console.log('[WPP] Inicializando sessão:', SESSION, '| WA Web:', whatsappVersion);
 
   try {
     wppClient = await wppconnect.create({
       session: SESSION,
 
-      // Login / sessão (tempo livre p/ autenticar)
+      // Login / sessão
       waitForLogin: true,
       autoClose: 0,
       maxAttempts: 3,
@@ -140,9 +162,8 @@ async function startWpp() {
       deviceName: 'Railway Bot',
       poweredBy: 'WPPConnect',
 
-      // 🔒 Forçar versão estável do WhatsApp Web para evitar "Sincronizando..."
-      // Se necessário, ajuste este valor para outra release estável.
-      whatsappVersion: '2.3000.1013',
+      // Forçar versão estável do WhatsApp Web
+      whatsappVersion,
 
       // Persistência
       tokenStore: 'file',
@@ -159,28 +180,31 @@ async function startWpp() {
         lastQrAt = Date.now();
         ready = false;
         console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-        // if (asciiQR) console.log(asciiQR); // deixe comentado (ASCII gigante)
       },
+
+      // Só considera "conectado" quando chatsAvailable
       statusFind: (statusSession, session) => {
         console.log('[WPP][Status]', session, statusSession);
-        if (['isLogged','qrReadSuccess','chatsAvailable'].includes(statusSession)) {
-          ready = true;
-          return;
-        }
+        if (statusSession === 'chatsAvailable') { ready = true; return; }
+        // estados críticos → troca de versão e reinicia
         if (['qrReadError','browserClose','autocloseCalled'].includes(statusSession)) {
           ready = false;
-          console.warn('[WPP] Status crítico:', statusSession, '→ reiniciando cliente em 3s...');
+          const next = (versionIdx + 1) % WA_VERSIONS.length;
+          console.warn('[WPP] Status crítico:', statusSession, '→ trocando WA Web para', WA_VERSIONS[next]);
           setTimeout(() => {
             try { wppClient?.close(); } catch {}
-            startWpp().catch(e => console.error('[WPP][restart][ERR]', e));
-          }, 3000);
+            startWpp(next).catch(e => console.error('[WPP][restart][ERR]', e));
+          }, 2000);
+        } else {
+          ready = false;
         }
       },
+
       onLoadingScreen: (p, msg) => console.log('[WPP][Loading]', p, msg),
 
       headless: true,
 
-      // ⚙️ Chromium estável + anti-detecção
+      // Chromium estável + anti-detecção
       browserArgs: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -220,19 +244,23 @@ async function startWpp() {
       logQR: false,
     });
 
-    // Eventos
+    // Estados do browser
     wppClient.onStateChange((state) => {
       console.log('[WPP][State]', state);
       ready = state === 'CONNECTED';
       if (['CONFLICT','UNPAIRED','UNLAUNCHED','DISCONNECTED'].includes(state)) ready = false;
     });
 
+    // Reinício automático em logout
     wppClient.onLogout(() => {
-      console.error('[WPP] Logout detectado. Reiniciando cliente...');
+      console.error('[WPP] Logout detectado.');
       ready = false;
-      setTimeout(() => startWpp().catch(e => console.error('[WPP][restart][ERR]', e)), 2000);
+      const next = (versionIdx + 1) % WA_VERSIONS.length;
+      console.warn('[WPP] Trocando WA Web para', WA_VERSIONS[next]);
+      setTimeout(() => startWpp(next).catch(e => console.error('[WPP][retry][ERR]', e)), 2000);
     });
 
+    // Mensagens recebidas
     wppClient.onMessage(async (message) => {
       try {
         if (message.fromMe) return;
@@ -250,10 +278,11 @@ async function startWpp() {
       }
     });
 
-    console.log('[WPP] Cliente criado.');
+    console.log('[WPP] Cliente criado com WA Web', whatsappVersion);
   } catch (err) {
     console.error('[BOOT][ERR] startWpp:', err);
-    setTimeout(() => startWpp().catch(e => console.error('[WPP][retry][ERR]', e)), 5000);
+    const next = (versionIdx + 1) % WA_VERSIONS.length;
+    setTimeout(() => startWpp(next).catch(e => console.error('[WPP][retry][ERR]', e)), 3000);
   }
 }
 
