@@ -1,17 +1,21 @@
 // ENV
 import 'dotenv/config';
 
-// Libs
+// Libs (IMPORT CORRIGIDO PARA ESM + CJS)
 import express from 'express';
 import qrcode from 'qrcode';
-import makeWASocket, {
+import OpenAI from 'openai';
+import fs from 'fs';
+
+// Baileys: importe tudo e extraia default e nomeados
+import * as baileys from '@whiskeysockets/baileys';
+const {
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
   DisconnectReason
-} from '@whiskeysockets/baileys';
-import OpenAI from 'openai';
-import fs from 'fs';
+} = baileys;
+const makeWASocket = baileys.default; // 👈 default export
 
 // Config
 const PORT = Number(process.env.PORT || 3000);
