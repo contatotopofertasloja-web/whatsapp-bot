@@ -162,26 +162,22 @@ async function startWpp() {
   console.log('[WPP] Inicializando sessão:', SESSION);
   const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
-  const client = await wppconnect.create({
+  wppClient = await wppconnect.create({
     session: SESSION,
 
-    // Login / sessão
+    // Login / sessão (tempo livre p/ autenticar)
     waitForLogin: true,
     autoClose: 0,
     maxAttempts: 3,
-    maxQrRetries: 9999,          // mantém a mesma sessão até conectar
-qrTimeout: 0,                // QR não expira (espera indefinidamente)
-authTimeout: 0,              // dá tempo ilimitado pro login
-autoClose: 0,                // nunca fecha sozinho
-    
+    maxQrRetries: 9999,
+    qrTimeout: 0,
+    authTimeout: 0,
     deviceName: 'Railway Bot',
     poweredBy: 'WPPConnect',
 
     // Persistência
     tokenStore: 'file',
     folderNameToken: 'wpp-store',
-folderNameToken: 'wpp-store', // já configurado
-
     deleteSessionToken: false,
     createOnInvalidSession: true,
     restartOnCrash: true,
@@ -194,7 +190,7 @@ folderNameToken: 'wpp-store', // já configurado
       lastQrAt = Date.now();
       ready = false;
       console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-      // if (asciiQR) console.log(asciiQR); // silencie o ASCII (gigante)
+      // if (asciiQR) console.log(asciiQR); // deixe comentado
     },
     statusFind: (statusSession, session) => {
       console.log('[WPP][Status]', session, statusSession);
@@ -225,8 +221,6 @@ folderNameToken: 'wpp-store', // já configurado
     disableSpins: true,
     logQR: false,
   });
-
-  wppClient = client;
 
   // Eventos de estado
   wppClient.onStateChange((state) => {
@@ -263,25 +257,3 @@ folderNameToken: 'wpp-store', // já configurado
 
   console.log('[WPP] Cliente criado.');
 }
-
-// --- Start HTTP primeiro; WPP inicia assíncrono (evita timeout no Railway) ---
-app.listen(PORT, () => {
-  console.log(`[HTTP] Servidor ouvindo em :${PORT}`);
-  startWpp()
-    .then(() => console.log('[BOOT] WPPConnect iniciado com sucesso!'))
-    .catch((err) => console.error('[BOOT][ERR]', err));
-});
-
-// --- Shutdown limpo ---
-async function shutdown(sig) {
-  console.log(`[SYS] Recebido ${sig}, finalizando...`);
-  try {
-    if (wppClient) await wppClient.close();
-  } catch (e) {
-    console.error('[SYS] Erro ao fechar WPP:', e);
-  } finally {
-    process.exit(0);
-  }
-}
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
