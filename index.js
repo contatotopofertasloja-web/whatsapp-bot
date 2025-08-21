@@ -1,6 +1,6 @@
 // --- ENV ---
 import 'dotenv/config';
- 
+
 // --- Libs ---
 import express from 'express';
 import OpenAI from 'openai';
@@ -58,6 +58,8 @@ app.get('/gpt-test', async (_, res) => {
         { role: 'system', content: 'Responda "OK" e nada mais.' },
         { role: 'user', content: 'ping' },
       ],
+      temperature: 0,
+      max_tokens: 5,
     });
     res.json({ reply: r.choices?.[0]?.message?.content ?? 'OK' });
   } catch (e) {
@@ -86,7 +88,7 @@ app.get('/qr.png', (req, res) => {
   }
 });
 
-// Página HTML que referencia a imagem acima e auto-atualiza
+// Página HTML que referencia a imagem acima e auto-atualiza (30s)
 app.get('/qr', (_, res) => {
   const hasQr = !!lastQrDataUrl && Date.now() - lastQrAt < 5 * 60 * 1000;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -121,7 +123,7 @@ app.get('/qr', (_, res) => {
               : '<p>Gerando QR… se não aparecer, aguarde alguns segundos e esta página recarregará sozinha.</p>'
       }
     </div>
-    <p class="muted">Esta página recarrega automaticamente a cada 5 segundos.</p>
+    <p class="muted">Esta página recarrega automaticamente a cada 30 segundos.</p>
   </div>
 <script>setTimeout(()=>location.reload(), 30000)</script>
 </body>
@@ -190,7 +192,7 @@ async function startWpp() {
       lastQrAt = Date.now();
       ready = false;
       console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-      // if (asciiQR) console.log(asciiQR); // deixe comentado
+      // if (asciiQR) console.log(asciiQR); // silencie o ASCII (gigante)
     },
     statusFind: (statusSession, session) => {
       console.log('[WPP][Status]', session, statusSession);
@@ -251,9 +253,4 @@ async function startWpp() {
       await wppClient.simulateTyping(message.from, false);
     } catch (err) {
       console.error('[WPP][onMessage][ERR]', err);
-      try { await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?'); } catch (_) {}
-    }
-  });
-
-  console.log('[WPP] Cliente criado.');
-}
+      try { await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?'); }
