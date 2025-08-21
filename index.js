@@ -1,308 +1,215 @@
-// --- ENV ---
+// ENV
 import 'dotenv/config';
 
-// --- Libs ---
+// Libs
 import express from 'express';
+import qrcode from 'qrcode';
+import makeWASocket, {
+  useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
+  DisconnectReason
+} from '@whiskeysockets/baileys';
 import OpenAI from 'openai';
-import wppconnect from '@wppconnect-team/wppconnect';
 import fs from 'fs';
-import path from 'path';
 
-// --- Hardening ---
-process.on('unhandledRejection', (e) => console.error('[FATAL][unhandledRejection]', e));
-process.on('uncaughtException',  (e) => console.error('[FATAL][uncaughtException]',  e));
+// Config
+const PORT = Number(process.env.PORT || 3000);
+const SESSION_DIR = process.env.SESSION_DIR || 'baileys-auth';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
 
-// --- Helpers ---
-const pickEnv = (names) => {
-  for (const k of names) {
-    let v = process.env[k];
-    if (typeof v !== 'string') continue;
-    v = v.trim().replace(/^['"]|['"]$/g, '');
-    if (v) return v;
-  }
-  return '';
-};
-
-// --- Config ---
-const PORT     = Number(process.env.PORT || 3000);
-const SESSION  = pickEnv(['WPP_SESSION','SESSION_NAME']) || 'SESSION_WHATSAPP';
-const MODEL    = pickEnv(['OPENAI_MODEL','MODEL']) || 'gpt-4o-mini';
-const BOT_NAME = pickEnv(['BOT_NAME']) || 'TopBot';
-const LOCALE   = pickEnv(['BOT_LOCALE']) || 'pt-BR';
-const API_KEY  = pickEnv(['OPENAI_API_KEY','OPENAI_API_KEI','OPENAI_APIKEY','OPEN_AI_API_KEY']);
-
-// Versões estáveis do WhatsApp Web (ladder pra destravar "Sincronizando...")
-const WA_VERSIONS = ['2.3000.1013', '2.3000.10243', '2.2412.54'];
-
-// --- OpenAI ---
-const openai = new OpenAI({ apiKey: API_KEY });
-
-// --- Express ---
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// --- Estado ---
-let wppClient = null;
-let ready = false;
-let lastQrDataUrl = ''; // data:image/png;base64,...
-let lastQrAt = 0;
+// Estado
+let sock = null;         // conexão Baileys
+let ready = false;       // chats disponíveis
+let qrString = '';       // string do QR (não imagem)
+let qrAt = 0;            // timestamp do último QR
 
-// --- Utils ---
-function normalizeQrDataUrl(b64) {
-  if (!b64) return '';
-  const s = String(b64).trim();
-  return s.startsWith('data:image') ? s : `data:image/png;base64,${s.replace(/\s/g,'')}`;
-}
+// OpenAI
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 async function askOpenAI(text) {
   try {
-    const sys = `Você é ${BOT_NAME}, um assistente de WhatsApp. Responda em ${LOCALE}, curto e objetivo.`;
     const r = await openai.chat.completions.create({
-      model: MODEL,
+      model: OPENAI_MODEL,
       temperature: 0.3,
       max_tokens: 300,
       messages: [
-        { role: 'system', content: sys },
-        { role: 'user', content: text || 'Olá' },
-      ],
+        { role: 'system', content: 'Você é um atendente via WhatsApp. Responda em pt-BR de forma breve e objetiva.' },
+        { role: 'user', content: text || 'Olá' }
+      ]
     });
     return r.choices?.[0]?.message?.content?.trim() || 'Certo!';
   } catch (e) {
     console.error('[OpenAI][ERR]', e);
-    return 'Ops! Tive um problema ao processar sua mensagem.';
+    return 'Ops! tive um probleminha aqui.';
   }
 }
 
-// --- Rotas básicas ---
-app.get('/',       (_,res)=>res.send('OK'));
-app.get('/health', (_,res)=>res.json({ ok:true, wppReady:ready, qrAvailable:!!lastQrDataUrl, qrGeneratedAt:lastQrAt }));
+// ===== Baileys (WhatsApp via WebSocket) =====
+async function startBaileys() {
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  const { version } = await fetchLatestBaileysVersion(); // pega versão compatível automaticamente
+  console.log('[BAILEYS] usando WA Web version', version);
 
-// ======== QR endpoints ========
-// PNG do QR (204 se já conectado ou ainda sem QR)
-app.get('/qr', (req, res) => {
+  sock = makeWASocket({
+    version,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, fs)
+    },
+    printQRInTerminal: false, // QR vai por HTTP
+    syncFullHistory: false,   // não precisa baixar histórico
+    markOnlineOnConnect: false
+  });
+
+  // Persistência
+  sock.ev.on('creds.update', saveCreds);
+
+  // Conexão / QR / Reconexão
+  sock.ev.on('connection.update', (upd) => {
+    const { connection, qr, lastDisconnect } = upd;
+
+    if (qr) {
+      qrString = qr;
+      qrAt = Date.now();
+      ready = false;
+      console.log('[BAILEYS][QR] disponível');
+    }
+
+    if (connection === 'open') {
+      ready = true;
+      qrString = '';
+      console.log('[BAILEYS] conectado!');
+    }
+
+    if (connection === 'close') {
+      ready = false;
+      const code = lastDisconnect?.error?.output?.statusCode
+                || lastDisconnect?.error?.statusCode
+                || lastDisconnect?.error?.code;
+      const reason = DisconnectReason[code] || code || 'unknown';
+      console.warn('[BAILEYS] desconectado:', reason);
+      setTimeout(() => startBaileys().catch(e => console.error('[BAILEYS][reconnect][ERR]', e)), 2000);
+    }
+  });
+
+  // Mensagens recebidas
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    try {
+      if (type !== 'notify') return;
+      const m = messages?.[0];
+      if (!m?.message || m.key.fromMe) return;
+
+      const remoteJid = m.key.remoteJid;
+
+      // extrai texto
+      const body =
+        m.message.conversation ??
+        m.message.extendedTextMessage?.text ??
+        m.message.imageMessage?.caption ??
+        m.message.videoMessage?.caption ??
+        '';
+
+      const text = (body || '').trim();
+      if (!text) return;
+
+      await sock.presenceSubscribe(remoteJid);
+      await sock.sendPresenceUpdate('composing', remoteJid);
+
+      const reply = await askOpenAI(text);
+      await sock.sendMessage(remoteJid, { text: reply });
+
+      await sock.sendPresenceUpdate('paused', remoteJid);
+    } catch (e) {
+      console.error('[BAILEYS][onMessage][ERR]', e);
+    }
+  });
+}
+
+// ===== HTTP endpoints =====
+app.get('/', (_, res) => res.send('OK'));
+
+app.get('/health', (_, res) => {
+  res.json({
+    ok: true,
+    wappReady: ready,
+    qrAvailable: !!qrString,
+    qrGeneratedAt: qrAt
+  });
+});
+
+// QR em PNG (leve pro browser)
+app.get('/qr', async (_, res) => {
   try {
-    if (ready || !lastQrDataUrl) return res.status(204).end();
-    const s = String(lastQrDataUrl).trim();
-    const b64 = s.startsWith('data:image') ? s.split(',')[1] : s;
-    const buf = Buffer.from(b64, 'base64');
+    if (ready || !qrString) return res.status(204).end(); // sem conteúdo
+    const png = await qrcode.toBuffer(qrString, { width: 512 });
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-    res.send(buf);
+    res.send(png);
   } catch (e) {
     console.error('[QR][ERR]', e);
-    res.status(500).json({ ok:false });
+    res.status(500).end();
   }
 });
 
-// Página HTML simples que embute a /qr
-app.get('/qr-page', (_, res) => {
+// Página do QR
+app.get('/qr-page', async (_, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(`<!doctype html>
 <html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QR Code - ${SESSION}</title>
+<title>QR Code - Baileys</title>
 <style>
   body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0b0e14; color:#eaeef2; padding:24px }
   .card { max-width:420px; margin:0 auto; background:#121826; border:1px solid #26304a; border-radius:16px; padding:20px; text-align:center }
   img { width:100%; height:auto; border-radius:12px }
   .muted { color:#9fb0c6; font-size:14px; margin-top:8px }
-  .badge { display:inline-block; margin:0 6px; padding:4px 10px; border-radius:999px; background:#1d263b; color:#c3d1e9; font-size:12px; border:1px solid #2a3552 }
-  .grid { display:flex; gap:8px; justify-content:center; margin-top:10px; flex-wrap:wrap }
 </style>
 </head><body>
   <div class="card">
     <h2>Conecte o WhatsApp</h2>
-    <div class="grid">
-      <span class="badge">Sessão: ${SESSION}</span>
-      <span class="badge">${ready ? 'Conectado' : (lastQrDataUrl ? 'QR ativo' : 'Gerando QR…')}</span>
-    </div>
     <div style="margin:16px 0;">
-      ${ready ? '<p>✅ Cliente já conectado.</p>' : '<img src="/qr?ts=' + Date.now() + '" alt="QR Code" />'}
+      ${ready ? '<p>✅ Conectado!</p>' : '<img src="/qr?ts=' + Date.now() + '" alt="QR Code" />'}
     </div>
-    <p class="muted">Esta página recarrega automaticamente a cada 30s.</p>
+    <p class="muted">Se o QR não aparecer, recarregue esta página.</p>
   </div>
-<script>setTimeout(()=>location.reload(), 30000)</script>
 </body></html>`);
 });
-// ======== fim QR endpoints ========
 
-// ======== Reset de sessão (apaga token e reinicia) ========
-app.post('/reset-session', async (_, res) => {
+// (Opcional) Envio manual para teste
+app.post('/send', async (req, res) => {
   try {
-    const dir = path.join(process.cwd(), 'wpp-store', SESSION);
-    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-    try { await wppClient?.close(); } catch {}
-    ready = false; lastQrDataUrl = ''; lastQrAt = 0;
-    setTimeout(() => startWpp().catch(e => console.error('[WPP][reset][ERR]', e)), 500);
-    res.json({ ok:true, reset:true });
+    if (!sock || !ready) return res.status(409).json({ ok:false, error:'WhatsApp ainda não está pronto (wappReady=false)' });
+
+    const { to, text } = req.body || {};
+    if (!to) return res.status(400).json({ ok:false, error:'Informe "to" (DDI+DDD+número). Ex: 5511999999999' });
+
+    const jid = String(to).replace(/\D/g, '') + '@s.whatsapp.net';
+    await sock.sendMessage(jid, { text: text || 'ping do /send' });
+    res.json({ ok:true, to: jid });
   } catch (e) {
-    console.error('[RESET][ERR]', e);
-    res.status(500).json({ ok:false, error:String(e?.message||e) });
+    console.error('[HTTP][send][ERR]', e);
+    res.status(500).json({ ok:false, error: String(e?.message || e) });
   }
 });
-// ==========================================================
 
-// --- WPPConnect ---
-async function startWpp(versionIdx = 0) {
-  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
-  const whatsappVersion = WA_VERSIONS[versionIdx] || WA_VERSIONS[0];
-  console.log('[WPP] Inicializando sessão:', SESSION, '| WA Web:', whatsappVersion);
-
-  try {
-    wppClient = await wppconnect.create({
-      session: SESSION,
-
-      // Login / sessão
-      waitForLogin: true,
-      autoClose: 0,
-      maxAttempts: 3,
-      maxQrRetries: 9999,
-      qrTimeout: 0,
-      authTimeout: 0,
-      deviceName: 'Railway Bot',
-      poweredBy: 'WPPConnect',
-
-      // Forçar versão estável do WhatsApp Web
-      whatsappVersion,
-
-      // Persistência
-      tokenStore: 'file',
-      folderNameToken: 'wpp-store',
-      deleteSessionToken: false,
-      createOnInvalidSession: true,
-      restartOnCrash: true,
-      killProcessOnBrowserClose: false,
-      shutdownOnCrash: false,
-
-      // QR
-      catchQR: (base64Qr, asciiQR, attempts) => {
-        lastQrDataUrl = normalizeQrDataUrl(base64Qr);
-        lastQrAt = Date.now();
-        ready = false;
-        console.log(`[WPP][QR] Tentativa ${attempts} | base64 len=${(base64Qr || '').length}`);
-      },
-
-      // Só considera "conectado" quando chatsAvailable
-      statusFind: (statusSession, session) => {
-        console.log('[WPP][Status]', session, statusSession);
-        if (statusSession === 'chatsAvailable') { ready = true; return; }
-        // estados críticos → troca de versão e reinicia
-        if (['qrReadError','browserClose','autocloseCalled'].includes(statusSession)) {
-          ready = false;
-          const next = (versionIdx + 1) % WA_VERSIONS.length;
-          console.warn('[WPP] Status crítico:', statusSession, '→ trocando WA Web para', WA_VERSIONS[next]);
-          setTimeout(() => {
-            try { wppClient?.close(); } catch {}
-            startWpp(next).catch(e => console.error('[WPP][restart][ERR]', e));
-          }, 2000);
-        } else {
-          ready = false;
-        }
-      },
-
-      onLoadingScreen: (p, msg) => console.log('[WPP][Loading]', p, msg),
-
-      headless: true,
-
-      // Chromium estável + anti-detecção
-      browserArgs: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-infobars',
-        '--window-size=1280,800',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-features=Translate,OptimizationHints,DeviceDiscoveryNotifications,MediaRouter,AutomationControlled',
-        '--disable-features=IsolateOrigins,site-per-process'
-      ],
-      puppeteerOptions: {
-        executablePath,
-        headless: 'new',
-        // remove flag que denuncia automação
-        ignoreDefaultArgs: ['--enable-automation'],
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--disable-extensions',
-          '--disable-infobars',
-          '--window-size=1280,800',
-          '--no-first-run',
-          '--no-default-browser-check',
-          '--disable-features=Translate,OptimizationHints,DeviceDiscoveryNotifications,MediaRouter,AutomationControlled',
-          '--disable-features=IsolateOrigins,site-per-process',
-          // User-Agent real de Chrome
-          '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36'
-        ],
-      },
-
-      disableSpins: true,
-      logQR: false,
-    });
-
-    // Estados do browser
-    wppClient.onStateChange((state) => {
-      console.log('[WPP][State]', state);
-      ready = state === 'CONNECTED';
-      if (['CONFLICT','UNPAIRED','UNLAUNCHED','DISCONNECTED'].includes(state)) ready = false;
-    });
-
-    // Reinício automático em logout
-    wppClient.onLogout(() => {
-      console.error('[WPP] Logout detectado.');
-      ready = false;
-      const next = (versionIdx + 1) % WA_VERSIONS.length;
-      console.warn('[WPP] Trocando WA Web para', WA_VERSIONS[next]);
-      setTimeout(() => startWpp(next).catch(e => console.error('[WPP][retry][ERR]', e)), 2000);
-    });
-
-    // Mensagens recebidas
-    wppClient.onMessage(async (message) => {
-      try {
-        if (message.fromMe) return;
-        if (message.isGroupMsg) return; // remova se quiser grupos
-        const body = (message?.body || message?.caption || '').trim();
-        if (!body) return;
-
-        await wppClient.simulateTyping(message.from, true);
-        const reply = await askOpenAI(body);
-        await wppClient.sendText(message.from, reply);
-        await wppClient.simulateTyping(message.from, false);
-      } catch (err) {
-        console.error('[WPP][onMessage][ERR]', err);
-        try { await wppClient.sendText(message.from, 'Ops! Tive um erro aqui. Pode tentar de novo?'); } catch (_) {}
-      }
-    });
-
-    console.log('[WPP] Cliente criado com WA Web', whatsappVersion);
-  } catch (err) {
-    console.error('[BOOT][ERR] startWpp:', err);
-    const next = (versionIdx + 1) % WA_VERSIONS.length;
-    setTimeout(() => startWpp(next).catch(e => console.error('[WPP][retry][ERR]', e)), 3000);
-  }
-}
-
-// --- Start HTTP primeiro; WPP depois (evita 502) ---
+// Start
 const server = app.listen(PORT, () => {
   console.log(`[HTTP] Servidor ouvindo em :${PORT}`);
-  startWpp()
-    .then(() => console.log('[BOOT] WPPConnect iniciado!'))
-    .catch((err) => console.error('[BOOT][ERR]', err));
+  startBaileys().catch(e => console.error('[BOOT][ERR]', e));
 });
-
-// Timeouts pró-proxy Railway
 server.keepAliveTimeout = 65_000;
 server.headersTimeout   = 66_000;
 server.requestTimeout   = 0;
 
-// --- Shutdown limpo ---
+// Shutdown limpo
 async function shutdown(sig) {
   console.log(`[SYS] ${sig} recebido, finalizando...`);
-  try { if (wppClient) await wppClient.close(); } catch (e) { console.error('[SYS] close err', e); }
+  try { await sock?.ws?.close(); } catch {}
   process.exit(0);
 }
 process.on('SIGINT',  () => shutdown('SIGINT'));
