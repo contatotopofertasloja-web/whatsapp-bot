@@ -1,4 +1,3 @@
-node_modules/ 
-session/ 
-.env 
-tokens/ 
+baileys-auth/
+node_modules/
+.env
