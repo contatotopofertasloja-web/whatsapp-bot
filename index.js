@@ -1,6 +1,6 @@
 // --- ENV ---
 import 'dotenv/config';
- 
+
 // --- Libs ---
 import fs from 'fs';
 import path from 'path';
@@ -9,7 +9,6 @@ import express from 'express';
 import qrcode from 'qrcode';
 import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import OpenAI from 'openai';
-// --- Redis (histórico) ---
 import { createClient } from 'redis';
 
 // -------- util de caminho (__dirname em ESM) --------
@@ -21,7 +20,7 @@ const openai = new OpenAI({
   apiKey: (process.env.OPENAI_API_KEY || '').trim(),
 });
 
-// -------- Config da Livia (JSON opcional) --------
+// -------- Config da Lívia (JSON) --------
 const LIVIA_CONFIG_PATH =
   (process.env.LIVIA_CONFIG_PATH && process.env.LIVIA_CONFIG_PATH.trim()) ||
   path.join(__dirname, 'config', 'livia_unificado_mvp.json');
@@ -32,63 +31,81 @@ function safeLoadJSON(filePath) {
     return JSON.parse(raw);
   } catch (e) {
     console.warn('[LIVIA] Não foi possível carregar JSON em', filePath, '→ usando fallback.');
-    return null;
+    return {};
   }
 }
-const LIVIA = safeLoadJSON(LIVIA_CONFIG_PATH) || {};
+const LIVIA = safeLoadJSON(LIVIA_CONFIG_PATH);
 const identityStrict = LIVIA.identity_strict || {};
 const persona = LIVIA.persona || {};
 
+// --- Produto foco básico (H1)
+const productFocus =
+  LIVIA?.product_focus ||
+  LIVIA?.product ||
+  (LIVIA?.product_catalog?.[LIVIA?.product_catalog?.default_product_key]) ||
+  { name: 'Progressiva Vegetal', type: 'cosmético', payment: 'Pagamento na Entrega (COD)' };
 
-// prompt padrão se não houver JSON
+const PRODUCT_SYNONYMS = Array.isArray(productFocus?.synonyms) && productFocus.synonyms.length
+  ? productFocus.synonyms
+  : ['progressiva vegetal', 'progressiva', 'escova progressiva', 'alisamento', 'alisante', 'botox capilar vegetal'];
+
+function isProductQuery(txt = '') {
+  const s = (txt || '').toLowerCase();
+  return PRODUCT_SYNONYMS.some(w => s.includes(w));
+}
+
+// --- BLOCO 03A: Produto padrão do catálogo (H2)
+const DEFAULT_PRODUCT_KEY = LIVIA?.product_catalog?.default_product_key;
+const PRODUCT = (DEFAULT_PRODUCT_KEY && LIVIA?.product_catalog?.[DEFAULT_PRODUCT_KEY]) || productFocus || {};
+
+const PRODUCT_NAME = PRODUCT?.name || 'Progressiva Vegetal';
+const BENEFITS = Array.isArray(PRODUCT?.benefits) ? PRODUCT.benefits : [];
+const DIFFERENTIALS = Array.isArray(PRODUCT?.differentials) ? PRODUCT.differentials : [];
+const DELIVERY = PRODUCT?.delivery || {}; // { avg_days_min, avg_days_max, note, tracking_by }
+
+const PRICING = PRODUCT?.pricing || {};
+const PRICING_TIERS = PRICING?.tiers || {};
+const PRICING_DEFAULT_TIER = PRICING?.default_tier || Object.keys(PRICING_TIERS)[0] || null;
+const PRICING_DEFAULT_URL = PRICING_DEFAULT_TIER ? (PRICING_TIERS[PRICING_DEFAULT_TIER]?.checkout_url || null) : null;
+
+// BLOCO 02: Regras de COD/Entrega (templates)
+const FAQ = LIVIA?.faq_cod_entregas || {};
+const CHECKOUT_CTA_TEMPLATE = FAQ?.rules?.checkout_cta_template || 'Aqui está seu link 👉 {{checkout_url}}';
+function formatCheckoutCTA(url) {
+  return (CHECKOUT_CTA_TEMPLATE || 'Link: {{checkout_url}}').replace('{{checkout_url}}', url || '');
+}
+function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) {
+  if (!url) return null;
+  const msg = formatCheckoutCTA(url);
+  return sendTypingMessage(sock, jid, msg);
+}
+
+// -------- Prompt do sistema (consolidado H1 + H2)
 function buildSystemPrompt() {
   const name = identityStrict.always_name || 'Lívia Martins';
   const forbidBot = identityStrict.never_reveal_bot !== false; // default true
   const city = persona.city || 'Brasília';
   const brand = persona.brand || 'TopOfertas Express';
 
+  const entregaTxt = (DELIVERY?.avg_days_min && DELIVERY?.avg_days_max)
+    ? `Entrega média ${DELIVERY.avg_days_min} a ${DELIVERY.avg_days_max} dias úteis.`
+    : `Entrega rápida (em dias úteis).`;
+  const codTxt = `Pagamento na entrega (COD) disponível quando aplicável.`;
+  const benefitsTxt = BENEFITS.length ? `Benefícios principais: ${BENEFITS.join(', ')}.` : '';
+  const diffTxt = DIFFERENTIALS.length ? `Diferenciais: ${DIFFERENTIALS.join(', ')}.` : '';
+
   return [
     `Você é ${name}, vendedora da ${brand}, em ${city}.`,
-    `Fale de forma humana, calorosa e objetiva; tom de consultora-amiga.`,
+    `Fale de forma humana, calorosa e objetiva; tom de consultora-amiga; use no máximo 2 emojis.`,
     forbidBot ? `Nunca diga que é bot, IA ou atendente virtual.` : ``,
-    // âncora de produto
-    `Você vende um produto cosmético chamado "${PRODUCT_NAME}" no modelo e-commerce, com envio para todo o Brasil.`,
-    `Nunca ofereça serviço presencial ou agendamento de salão. Se perguntarem como serviço, explique gentilmente que é um produto para usar em casa.`,
-    `Quando perguntarem "tem progressiva?" ou variações, trate como "${PRODUCT_NAME}" (produto) e não como serviço.`,
-    `Se possível, conduza para o fechamento: tirar dúvidas rápidas, informar formas de pagamento (incluindo COD, se aplicável), pedir CEP quando fizer sentido.`,
+    `Você vende um produto cosmético chamado "${PRODUCT_NAME}" no e-commerce, com envio para todo o Brasil.`,
+    `Nunca ofereça serviço presencial ou agendamento de salão; se perguntarem como serviço, explique gentilmente que é um produto para usar em casa.`,
+    benefitsTxt,
+    diffTxt,
+    `${entregaTxt} ${codTxt}`,
+    PRICING_DEFAULT_URL ? `Quando houver intenção de compra, apresente o checkout usando este template: "${CHECKOUT_CTA_TEMPLATE}".` : ``,
+    `Se a cliente perguntar "tem progressiva?" ou variações, interprete como o produto "${PRODUCT_NAME}" (não como serviço).`
   ].filter(Boolean).join(' ');
-}
-
-// --- Produto foco (fallback para Progressiva Vegetal) ---
-const productFocus =
-  LIVIA?.product_focus
-  || LIVIA?.product
-  || (LIVIA?.product_catalog?.[LIVIA?.product_catalog?.default_product_key])
-  || { name: 'Progressiva Vegetal', type: 'cosmético', payment: 'Pagamento na Entrega (COD)' };
-
-const PRODUCT_NAME = productFocus.name || 'Progressiva Vegetal';
-
-// Sinônimos que a cliente pode usar pra "progressiva"
-const PRODUCT_SYNONYMS = (productFocus.synonyms && Array.isArray(productFocus.synonyms) && productFocus.synonyms.length)
-  ? productFocus.synonyms
-  : ['progressiva vegetal', 'progressiva', 'escova progressiva', 'alisamento', 'alisante', 'botox capilar vegetal'];
-
-// Classificador localzinho (não-IA) pra detectar intenção de produto
-function isProductQuery(txt = '') {
-  const s = (txt || '').toLowerCase();
-  return PRODUCT_SYNONYMS.some(w => s.includes(w));
-}
-
-  // Regras essenciais (curtas e seguras)
-  return [
-    `Você é ${name}, vendedora da ${brand}, em ${city}.`,
-    `Fale de forma humana, calorosa e objetiva; use tom de consultora-amiga.`,
-    forbidBot ? `Nunca diga que é bot, IA ou atendente virtual.` : ``,
-    `Se perguntarem “você é um bot?”: responda como ${name} (humana) e siga ajudando.`,
-    `Evite links desnecessários. Se não souber algo, diga que vai verificar e siga no atendimento.`,
-  ]
-    .filter(Boolean)
-    .join(' ');
 }
 
 // -------- Redis (histórico por JID) --------
@@ -114,7 +131,6 @@ const HIST_LIMIT = 24; // últimas 24 mensagens (12 trocas)
 function histKey(jid) {
   return `hist:${jid}`;
 }
-
 async function loadHistory(jid) {
   try {
     const cli = await getRedis();
@@ -122,14 +138,12 @@ async function loadHistory(jid) {
     const raw = await cli.get(histKey(jid));
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr;
-    return [];
+    return Array.isArray(arr) ? arr : [];
   } catch (e) {
     console.warn('[HIST] load falhou:', e?.message || e);
     return [];
   }
 }
-
 async function saveHistory(jid, msgs) {
   try {
     const cli = await getRedis();
@@ -148,28 +162,18 @@ async function saveHistory(jid, msgs) {
 
 // -------- Delay + status "digitando..." --------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 async function sendTypingMessage(sock, jid, message) {
   try {
     await sock.presenceSubscribe(jid);
     await sock.sendPresenceUpdate('composing', jid);
-
-    // delay proporcional ao tamanho (máx 3.5s)
-    const delay = Math.min(3500, Math.max(500, message.length * 25));
+    const delay = Math.min(3500, Math.max(500, (message || '').length * 25));
     await sleep(delay);
-
     await sock.sendMessage(jid, { text: message });
   } catch (e) {
     console.warn('[WPP][typing] falhou, enviando direto:', e?.message || e);
-    try {
-      await sock.sendMessage(jid, { text: message });
-    } catch (e2) {
-      console.error('[WPP] sendMessage erro:', e2?.message || e2);
-    }
+    try { await sock.sendMessage(jid, { text: message }); } catch (e2) { console.error('[WPP] sendMessage erro:', e2?.message || e2); }
   } finally {
-    try {
-      await sock.sendPresenceUpdate('paused', jid);
-    } catch (_) {}
+    try { await sock.sendPresenceUpdate('paused', jid); } catch (_) {}
   }
 }
 
@@ -198,10 +202,9 @@ async function startBaileys() {
     sock = makeWASocket({
       version,
       auth: state,
-      printQRInTerminal: false, // desativa o QR no terminal
+      printQRInTerminal: false,
     });
 
-    // Evento para QR Code e conexão
     sock.ev.on('connection.update', (update) => {
       const { qr, connection, lastDisconnect } = update;
 
@@ -210,20 +213,17 @@ async function startBaileys() {
         wppReady = false;
         console.log('[WPP] QRCode gerado');
       }
-
       if (connection === 'open') {
         console.log('[WPP] Conectado com sucesso');
         qrCodeData = null;
         wppReady = true;
       }
-
       if (connection === 'close') {
         console.log('[WPP] Conexão fechada, tentando reconectar...', lastDisconnect?.error?.message || '');
         startBaileys();
       }
     });
 
-    // Salva credenciais
     sock.ev.on('creds.update', saveCreds);
 
     // Recebe mensagens
@@ -238,31 +238,26 @@ async function startBaileys() {
 
         console.log(`[MSG] ${from}: ${text}`);
 
-        // Carrega histórico (se houver Redis)
         const history = await loadHistory(from);
 
-        // Monta mensagens para o GPT (com histórico)
-       const system = buildSystemPrompt();
-const hints = [];
+        const system = buildSystemPrompt();
+        const hints = [];
+        if (isProductQuery(text)) {
+          hints.push(
+            `ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva). Responda como PRODUTO (e-commerce), não como serviço. ` +
+            `Se fizer sentido, mencione pagamento na entrega (COD) e envio de forma objetiva.`
+          );
+        }
 
-if (isProductQuery(text)) {
-  hints.push(
-    `ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva). Responda como produto (e-commerce), NÃO como serviço. ` +
-    `Se for natural mencionar pagamento na entrega (COD) e envio, faça de forma objetiva.`
-  );
-}
+        const messages = [
+          { role: 'system', content: system },
+          ...hints.map(h => ({ role: 'system', content: h })),
+          ...history,
+          { role: 'user', content: text }
+        ];
 
-const messages = [
-  { role: 'system', content: system },
-  ...hints.map(h => ({ role: 'system', content: h })),
-  ...history,
-  { role: 'user', content: text }
-];
-
-       
         try {
           const completion = await openai.chat.completions.create({
-            // use o modelo que preferir/tem acesso; mantendo compat com seu código atual
             model: 'gpt-3.5-turbo',
             messages,
             temperature: 0.6,
@@ -271,7 +266,6 @@ const messages = [
           const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
           await sendTypingMessage(sock, from, reply);
 
-          // salva histórico atualizado
           const newHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: reply }];
           await saveHistory(from, newHist);
         } catch (err) {
@@ -292,24 +286,16 @@ startBaileys();
 const app = express();
 
 // Healthcheck
-app.get('/health', (_, res) =>
-  res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData })
-);
+app.get('/health', (_, res) => res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData }));
+
+// Versão (debug)
+const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
+app.get('/version', (_req, res) => res.json({ ok: true, build: BUILD_TAG }));
+
 // JSON da Lívia — verificação rápida
 app.get('/livia-info', (_req, res) => {
   const loaded = !!LIVIA && Object.keys(LIVIA || {}).length > 0;
-  res.json({
-    loaded,
-    path: LIVIA_CONFIG_PATH,
-    name: LIVIA?.name || null,
-    version: LIVIA?.version || null
-  });
-});
-
-// Versão em execução (debug)
-const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
-app.get('/version', (_req, res) => {
-  res.json({ ok: true, build: BUILD_TAG });
+  res.json({ loaded, path: LIVIA_CONFIG_PATH, name: LIVIA?.name || null, version: LIVIA?.version || null });
 });
 
 // Redis ping (debug)
@@ -325,19 +311,15 @@ app.get('/redis-ping', async (_req, res) => {
 });
 
 // QR em PNG
-app.get('/qr', async (_, res) => {
-  if (!qrCodeData) {
-    return res.status(400).json({ error: 'QR não disponível' });
-  }
+app.get('/qr', async (_req, res) => {
+  if (!qrCodeData) return res.status(400).json({ error: 'QR não disponível' });
   res.setHeader('Content-Type', 'image/png');
   res.send(await qrcode.toBuffer(qrCodeData));
 });
 
 // QR em página HTML
-app.get('/qr-page', async (_, res) => {
-  if (!qrCodeData) {
-    return res.send('<h1>✅ WhatsApp conectado!</h1>');
-  }
+app.get('/qr-page', async (_req, res) => {
+  if (!qrCodeData) return res.send('<h1>✅ WhatsApp conectado!</h1>');
   const qrPng = await qrcode.toDataURL(qrCodeData);
   res.send(`
     <html>
