@@ -247,6 +247,11 @@ const app = express();
 app.get('/health', (_, res) =>
   res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData })
 );
+// Versão em execução (debug)
+const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
+app.get('/version', (_req, res) => {
+  res.json({ ok: true, build: BUILD_TAG });
+});
 
 // Redis ping (debug)
 app.get('/redis-ping', async (_req, res) => {
