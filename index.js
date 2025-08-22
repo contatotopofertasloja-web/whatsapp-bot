@@ -79,6 +79,63 @@ function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) {
   const msg = formatCheckoutCTA(url);
   return sendTypingMessage(sock, jid, msg);
 }
+// --- Anti-repetição e fechamento inteligente ---
+function isDeliveryQuery(t){ return /\b(entrega|prazo|frete|chega|demora)\b/i.test(t||''); }
+function isBenefitsQuery(t){ return /\b(benef[ií]cios?|vantagens?|diferenciais?)\b/i.test(t||''); }
+function isPriceQuery(t){ return /\b(pre[cç]o|valor|custa|quanto)\b/i.test(t||''); }
+
+const GENERIC_CLOSERS = [
+  'Como posso te ajudar mais?',
+  'Como posso ser útil hoje?',
+  'Como posso te ajudar hoje?'
+];
+
+function smartClosingQuestion(userText){
+  if (isDeliveryQuery(userText)) return 'Me passa seu CEP para eu calcular o prazo certinho?';
+  if (isBenefitsQuery(userText)) return 'Quer que eu te mostre como aplicar passo a passo?';
+  if (isPriceQuery(userText)) return 'Você pensa em 1, 2 ou 3 unidades?';
+  if (isProductQuery(userText)) return 'Prefere um resultado liso intenso ou mais natural?';
+  return 'Posso te ajudar em mais algum ponto?';
+}
+
+function stripRepeatedClosers(txt){
+  let out = txt || '';
+  for (const c of GENERIC_CLOSERS){
+    const re = new RegExp(c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
+    out = out.replace(re, '').trim();
+  }
+  return out;
+}
+
+function limitEmojis(txt){
+  const all = (txt||'').match(/\p{Extended_Pictographic}/gu) || [];
+  if (all.length <= 1) return txt;
+  let kept = false;
+  return (txt||'').replace(/\p{Extended_Pictographic}/gu, m => kept ? '' : (kept = true, m));
+}
+
+function limitSentences(txt, max=3){
+  const parts = (txt||'').split(/(?<=\.)\s+/).filter(Boolean);
+  return parts.slice(0, max).join(' ').trim() || txt;
+}
+
+function polishReply(reply, userText){
+  let out = reply || '';
+
+  // Evitar CTA texto quando não há intenção de compra
+  if (!isBuyIntent(userText)){
+    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
+  }
+
+  out = stripRepeatedClosers(out);
+  out = limitSentences(out, 3);
+  out = limitEmojis(out);
+
+  const closing = smartClosingQuestion(userText);
+  if (closing && !out.endsWith('?')) out = `${out} ${closing}`;
+  return out.trim();
+}
+
 // -------- Prompt do sistema (consolidado H1 + H2)
 function buildSystemPrompt() {
   const name = identityStrict.always_name || 'Lívia Martins';
