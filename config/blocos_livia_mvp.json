@@ -1,0 +1,61 @@
+{
+  "version": "1.0.0",
+  "product": "Progressiva Vegetal Profissional",
+  "default_checkout": "https://entrega.logzz.com.br/pay/memmpxgmg/progcreme150",
+  "rules": {
+    "style": "curta, calorosa, objetiva; 1-2 frases; sem jargão; evitar repetir CTA em mensagens consecutivas",
+    "cta_policy": "se já foi enviado link na última mensagem, não repetir; oferecer ajuda no passo a passo"
+  },
+  "blocks": {
+    "B01_saudacao": {
+      "goal": "quebrar gelo e puxar contexto",
+      "when": ["first_contact", "return_after_24h"],
+      "variants": [
+        "Oi, aqui é a Lívia 👋 Posso te ajudar a escolher a versão certa da Progressiva Vegetal?",
+        "Oi! Sou a Lívia da TopOfertas. Quer tirar uma dúvida rapidinho sobre a progressiva sem formol?"
+      ],
+      "style": "curta, calorosa, chama-para-ação"
+    },
+    "B02_qualificacao": {
+      "goal": "entender dor e prazo",
+      "when": ["interest_detected"],
+      "variants": [
+        "Pra eu te indicar certinho: seu cabelo é {tipo_cabelo}? Busca mais brilho, reduzir frizz ou efeito mais liso?",
+        "Me conta: você quer resultado liso intenso ou só controle de volume e brilho? Tem algum evento/prioridade?"
+      ],
+      "extract": ["tipo_cabelo", "objetivo", "prazo_evento"]
+    },
+    "B03_pitch": {
+      "goal": "apresentar proposta e CTA",
+      "when": ["ready_to_pitch"],
+      "variants": [
+        "Pelo que me falou ({objetivo}), a melhor opção é a Progressiva Vegetal {versao}. Resultado em {tempo_efeito}. Posso te mandar o link seguro?",
+        "Fechou! Pra {objetivo}, a que mais sai é a {versao}. Entrega rápida e **pagamento na entrega**. Quer o link agora?"
+      ],
+      "cta_template": "{checkout}"
+    },
+    "B04_objeções": {
+      "goal": "tratar dúvidas comuns",
+      "map": {
+        "preco": [
+          "Hoje estamos no promocional: de R$ 197,00 por **R$ 150,00**. Tem **pagamento na entrega**. Quer o link?"
+        ],
+        "seguranca": [
+          "Compra com nota, rastreio e suporte. Posso te passar os passos pra finalizar?",
+          "Site seguro e pagamento na entrega. Quer que eu te envie o link?"
+        ],
+        "efeito": [
+          "É **sem formol**, indicado pra reduzir frizz e alinhar. Posso te enviar dicas de aplicação em 3 passos.",
+          "Age em {tempo_efeito}; resultado melhora com escova/prancha. Quer que eu te mande o modo de uso?"
+        ]
+      }
+    },
+    "B05_fechamento": {
+      "goal": "converter com apoio",
+      "variants": [
+        "Perfeito! Clique aqui pra finalizar com **pagamento na entrega**: {checkout}. Se preferir, te acompanho no passo a passo 😉",
+        "Show! Este é o link seguro: {checkout}. Qualquer dúvida, fico aqui pra te ajudar."
+      ]
+    }
+  }
+}
