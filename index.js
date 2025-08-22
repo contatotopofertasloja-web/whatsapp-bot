@@ -35,6 +35,58 @@ function safeLoadJSON(filePath) {
 const LIVIA = safeLoadJSON(LIVIA_CONFIG_PATH);
 const identityStrict = LIVIA.identity_strict || {};
 const persona = LIVIA.persona || {};
+// --- Blocos da Lívia (MVP) ---
+const BLOCOS_PATH =
+  process.env.BLOCOS_PATH || path.join(__dirname, 'config', 'blocos_livia_mvp.json');
+
+let BLOCOS = null;
+try {
+  BLOCOS = JSON.parse(fs.readFileSync(BLOCOS_PATH, 'utf8'));
+  console.log('[BLOCOS] carregado:', BLOCOS?.version || 'sem versão');
+} catch (e) {
+  console.warn('[BLOCOS] não carregado →', e?.message || e);
+  BLOCOS = null;
+}
+
+function buildSystemPromptBase(memSummary = '') {
+  const product   = BLOCOS?.product || 'Progressiva Vegetal';
+  const style     = BLOCOS?.rules?.style || 'curta, calorosa, objetiva';
+  const ctaPolicy = BLOCOS?.rules?.cta_policy || 'evitar repetir CTA em mensagens consecutivas';
+
+  return [
+    'Você é a Lívia, vendedora da TopOfertas (Brasília).',
+    `Tom: ${style}. Responda em 1–2 frases, sem jargão.`,
+    `Política de CTA: ${ctaPolicy}.`,
+    `Produto foco: ${product}.`,
+    `RESUMO_7d: (vazio neste passo)`,
+    `Se fizer sentido, use as frases sugeridas como inspiração — adapte e mantenha o tom natural.`
+  ].join('\n');
+}
+
+function intentFor(text = '') {
+  const s = (text || '').toLowerCase();
+  if (/\b(oi|olá|bom dia|boa tarde|boa noite)\b/.test(s)) return 'greeting';
+  if (isPriceQuery?.(text))  return 'price';
+  if (isBuyIntent?.(text))   return 'buy';
+  return 'other';
+}
+
+function blockSuggestions(text = '') {
+  const blocks = BLOCOS?.blocks || {};
+  const intent = intentFor(text);
+
+  let pick = [];
+  if (intent === 'greeting' && blocks.B01_saudacao?.variants)   pick = blocks.B01_saudacao.variants;
+  else if (intent === 'price' && blocks.B04_objeções?.map?.preco) pick = blocks.B04_objeções.map.preco;
+  else if (intent === 'buy' && blocks.B05_fechamento?.variants) pick = blocks.B05_fechamento.variants;
+  else if (blocks.B02_qualificacao?.variants)                   pick = blocks.B02_qualificacao.variants;
+
+  if (!Array.isArray(pick) || !pick.length) return '';
+  const one = () => pick[Math.floor(Math.random() * pick.length)];
+  const uniq = Array.from(new Set([one(), one()])).filter(Boolean);
+  return uniq.length ? `Sugestões:\n- ${uniq.join('\n- ')}` : '';
+}
+
 
 // --- Produto (catálogo JSON + fallback) ---
 const DEFAULT_PRODUCT_KEY = LIVIA?.product_catalog?.default_product_key;
@@ -292,18 +344,30 @@ const { state, saveCreds } = await useMultiFileAuthState('/app/baileys-auth');
         console.log(`[MSG] ${from}: ${text}`);
 
         const history = await loadHistory(from);
-        const system = buildSystemPrompt();
-        const hints = [];
-        if (isProductQuery(text)) {
-          hints.push(`ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva). Responda como PRODUTO (e-commerce), não como serviço. Se fizer sentido, mencione envio e COD.`);
-        }
+       // (mantém isto) const history = await loadHistory(from);
 
-        const messages = [
-          { role: 'system', content: system },
-          ...hints.map(h => ({ role: 'system', content: h })),
-          ...history,
-          { role: 'user', content: text } 
-        ];
+// APAGUE estas duas linhas antigas:
+// const system = buildSystemPrompt();
+// const messages = [ ... ]
+
+// Deixe os hints como já estão
+const hints = [];
+if (isProductQuery(text)) {
+  hints.push(`ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva sem formol).`);
+}
+
+// P2 — prompt base + sugestões de blocos
+const sys = buildSystemPromptBase('');      // memSummary vazio (P3 entra depois)
+const suggest = blockSuggestions(text);
+
+// messages final (mantém hints e history)
+const messages = [
+  { role: 'system', content: suggest ? `${sys}\n\n${suggest}` : sys },
+  ...hints.map(h => ({ role: 'system', content: h })),
+  ...history,
+  { role: 'user', content: text }
+];
+
 
         try {
           // Defina antes no topo, perto do OpenAI:
