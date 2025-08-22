@@ -75,14 +75,14 @@ function blockSuggestions(text = '') {
   const blocks = BLOCOS?.blocks || {};
   const intent = intentFor(text);
 
-  let pick = [];
-  if (intent === 'greeting' && blocks.B01_saudacao?.variants)   pick = blocks.B01_saudacao.variants;
-  else if (intent === 'price' && blocks.B04_objeções?.map?.preco) pick = blocks.B04_objeções.map.preco;
-  else if (intent === 'buy' && blocks.B05_fechamento?.variants) pick = blocks.B05_fechamento.variants;
-  else if (blocks.B02_qualificacao?.variants)                   pick = blocks.B02_qualificacao.variants;
+  let pickOne = [];
+  if (intent === 'greeting' && blocks.B01_saudacao?.variants)   pickOne = blocks.B01_saudacao.variants;
+  else if (intent === 'price' && blocks.B04_objeções?.map?.preco) pickOne = blocks.B04_objeções.map.preco;
+  else if (intent === 'buy' && blocks.B05_fechamento?.variants) pickOne = blocks.B05_fechamento.variants;
+  else if (blocks.B02_qualificacao?.variants)                   pickOne = blocks.B02_qualificacao.variants;
 
-  if (!Array.isArray(pick) || !pick.length) return '';
-  const one = () => pick[Math.floor(Math.random() * pick.length)];
+  if (!Array.isArray(pickOne) || !pickOne.length) return '';
+  const one = () => pickOne[Math.floor(Math.random() * pickOne.length)];
   const uniq = Array.from(new Set([one(), one()])).filter(Boolean);
   return uniq.length ? `Sugestões:\n- ${uniq.join('\n- ')}` : '';
 }
@@ -216,8 +216,8 @@ const SOFT_CLOSERS = [
 // Abridores leves (opcionais)
 const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
 
-// util de pick (mantenha apenas UMA no arquivo)
-function pick(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
+// util de pickOne (mantenha apenas UMA no arquivo)
+function pickOne(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
 
 // helpers de pós-processamento
 // Abridores leves (opcionais)
@@ -285,10 +285,10 @@ function polishReply(reply, userText){
 
   // abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
   if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
-    out = `${pick(SOFT_OPENERS)} ${out}`.trim();
+    out = `${pickOne(SOFT_OPENERS)} ${out}`.trim();
   }
 
-  const closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  const closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
   if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
 
   return out;
@@ -307,10 +307,10 @@ function polishReply(reply, userText){
 
   // Abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
   if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
-    out = `${pick(SOFT_OPENERS)} ${out}`.trim();
+    out = `${pickOne(SOFT_OPENERS)} ${out}`.trim();
   }
 
-  let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  let closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
   if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
 
   return out;
@@ -328,7 +328,7 @@ function polishReply(reply, userText){
   out = limitSentences(out, 2);    // respostas mais curtas (máx. 2 frases)
   out = limitEmojis(out);
 
-  let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  let closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
   if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
 
   return out;
