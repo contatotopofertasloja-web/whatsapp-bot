@@ -125,27 +125,10 @@ function isBuyIntent(txt = '') {
   return kws.some(k => s.includes(k));
 }
 function normalize(str = '') { return String(str||'').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,''); }
-function tierURLFromText(txt = '') {
-  const s = normalize(txt);
-  const keys = Object.keys(PRICING_TIERS || {}); if (!keys.length) return null;
-  const findBy = (needle) => keys.find(k => normalize(k).includes(needle) || normalize(PRICING_TIERS[k]?.label || '').includes(needle));
-  if (/\b150\b/.test(s) || /\b1\s*5\s*0\b/.test(s) || s.includes('pix') || s.includes('a vista') || s.includes('à vista') || s.includes('avista') || s.includes('dinheiro')) {
-    const k = findBy('150') || findBy('preco_150'); if (k) return PRICING_TIERS[k]?.checkout_url || null;
-  }
-  if (/\b170\b/.test(s) || s.includes('promo') || s.includes('desconto') || s.includes('cupom') || s.includes('oferta')) {
-    const k = findBy('170') || findBy('preco_170'); if (k) return PRICING_TIERS[k]?.checkout_url || null;
-  }
-  if (/\b197\b/.test(s)) {
-    const k = findBy('197') || findBy('preco_197'); if (k) return PRICING_TIERS[k]?.checkout_url || null;
-  }
-  for (const k of keys) {
-    if (s.includes(normalize(k)) || s.includes(normalize(PRICING_TIERS[k]?.label || ''))) {
-      const url = PRICING_TIERS[k]?.checkout_url || null; if (url) return url;
-    }
-  }
+function tierURLFromText(_txt = '') {
+  // Agora temos preço único (R$ 150), então sempre devolve o default
   return PRICING_DEFAULT_URL || null;
 }
-function replyHasURL(txt = '') { return /https?:\/\/\S+/i.test(txt || ''); }
 
 // --- Preços canônicos (anti-alucinação) ---
 function formatBRL(n){ return `R$ ${Number(n).toFixed(2).replace('.', ',')}`; }
