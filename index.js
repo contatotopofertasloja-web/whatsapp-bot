@@ -3,7 +3,7 @@ import 'dotenv/config';
 
 // --- Libs ---
 import fs from 'fs';
-import path from 'path';
+import path from 'path'; 
 import { fileURLToPath } from 'url';
 import express from 'express';
 import qrcode from 'qrcode';
@@ -160,14 +160,58 @@ const SOFT_CLOSERS = [
   'Te envio rapidinho?',
   'Posso te orientar no passo a passo?'
 ];
+
+// Abridores leves (opcionais)
+const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
+
+// util de pick (tenha só UMA no arquivo)
 function pick(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
 
+// helpers de pós-processamento
+function stripRepeatedClosers(txt){
+  let out = txt || '';
+  for (const c of GENERIC_CLOSERS){
+    const re = new RegExp(c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
+    out = out.replace(re,'').trim();
+  }
+  return out;
+}
+function limitEmojis(txt){
+  const all = (txt||'').match(/\p{Extended_Pictographic}/gu) || [];
+  if (all.length <= 1) return txt;
+  let kept = false;
+  return (txt||'').replace(/\p{Extended_Pictographic}/gu, () => kept ? '' : (kept = true, ''));
+}
+function limitSentences(txt, max = 2){ // já fixa 2 frases
+  const parts = (txt||'').split(/(?<=\.)\s+/).filter(Boolean);
+  return parts.slice(0, max).join(' ').trim() || txt;
+}
 
-function stripRepeatedClosers(txt){ let out = txt||''; for (const c of GENERIC_CLOSERS){ const re = new RegExp(c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'); out = out.replace(re,'').trim(); } return out; }
-function limitEmojis(txt){ const all=(txt||'').match(/\p{Extended_Pictographic}/gu)||[]; if(all.length<=1) return txt; let kept=false; return (txt||'').replace(/\p{Extended_Pictographic}/gu,m=> kept? '' : (kept=true,m)); }
-function limitSentences(txt,max=3){ const parts=(txt||'').split(/(?<=\.)\s+/).filter(Boolean); return parts.slice(0,max).join(' ').trim()||txt; }
 function polishReply(reply, userText){
   let out = reply || '';
+
+  // Se não for CTA, remove “posso te enviar o link...” que o modelo às vezes adiciona
+  if (!isBuyIntent(userText)) {
+    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
+  }
+
+  out = stripRepeatedClosers(out);
+  out = limitSentences(out, 2);   // respostas mais curtas
+  out = limitEmojis(out);
+
+  // Abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
+  if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
+    out = `${pick(SOFT_OPENERS)} ${out}`.trim();
+  }
+
+  let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
+
+  return out;
+}
+
+
+  
 
   // Se não for CTA, tira “posso te enviar o link...” que o modelo às vezes adiciona
   if (!isBuyIntent(userText)) {
@@ -270,7 +314,10 @@ console.log('[GPT] Model em uso:', MODEL);
 const completion = await openai.chat.completions.create({
   model: MODEL,
   messages,
-  temperature: 0.6
+  temperature: 0.8,      // + solta, porém ainda controlada
+  top_p: 0.9,
+  frequency_penalty: 0.3, // evita repetir frases
+  presence_penalty: 0.2   // incentiva variar um pouco
 });
 
 
