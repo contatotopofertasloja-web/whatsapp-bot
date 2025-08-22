@@ -238,7 +238,7 @@ let sock; let qrCodeData = null; let wppReady = false;
 // --- Baileys ---
 async function startBaileys() {
   try {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys-auth');
+const { state, saveCreds } = await useMultiFileAuthState('/app/baileys-auth');
     const { version } = await fetchLatestBaileysVersion();
     sock = makeWASocket({ version, auth: state, printQRInTerminal: false });
 
