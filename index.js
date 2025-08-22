@@ -152,19 +152,36 @@ function smartClosingQuestion(userText){
   if (isPriceQuery(userText)) return 'Você pensa em 1, 2 ou 3 unidades?';
   if (isProductQuery(userText)) return 'Prefere um resultado liso intenso ou mais natural?';
   return 'Posso te ajudar em mais algum ponto?';
-}
+  }
+// --- Fechamentos curtos e naturais ---
+const SOFT_CLOSERS = [
+  'Te mando o link?',
+  'Quer o link agora?',
+  'Te envio rapidinho?',
+  'Posso te orientar no passo a passo?'
+];
+function pick(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
+
+
 function stripRepeatedClosers(txt){ let out = txt||''; for (const c of GENERIC_CLOSERS){ const re = new RegExp(c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'); out = out.replace(re,'').trim(); } return out; }
 function limitEmojis(txt){ const all=(txt||'').match(/\p{Extended_Pictographic}/gu)||[]; if(all.length<=1) return txt; let kept=false; return (txt||'').replace(/\p{Extended_Pictographic}/gu,m=> kept? '' : (kept=true,m)); }
 function limitSentences(txt,max=3){ const parts=(txt||'').split(/(?<=\.)\s+/).filter(Boolean); return parts.slice(0,max).join(' ').trim()||txt; }
-function polishReply(reply,userText){
+function polishReply(reply, userText){
   let out = reply || '';
-  if (!isBuyIntent(userText)) out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi,'').trim();
+
+  // Se não for CTA, tira “posso te enviar o link...” que o modelo às vezes adiciona
+  if (!isBuyIntent(userText)) {
+    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
+  }
+
   out = stripRepeatedClosers(out);
-  out = limitSentences(out,3);
+  out = limitSentences(out, 2);    // respostas mais curtas (máx. 2 frases)
   out = limitEmojis(out);
-  const closing = smartClosingQuestion(userText);
-  if (closing && !out.endsWith('?')) out = `${out} ${closing}`;
-  return out.trim();
+
+  let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
+
+  return out;
 }
 
 // --- Prompt do sistema (persona + produto + regras) ---
