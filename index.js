@@ -274,11 +274,15 @@ async function startBaileys() {
         ];
 
         try {
-          const completion = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
-            messages,
-            temperature: 0.6
-          });
+          // Defina antes no topo, perto do OpenAI:
+// const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+const completion = await openai.chat.completions.create({
+  model: MODEL,
+  messages,
+  temperature: 0.6
+});
+
 
           const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
           let polished = polishReply(reply, text);
