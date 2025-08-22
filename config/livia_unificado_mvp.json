@@ -201,23 +201,16 @@
           "https://cdn.shopify.com/s/files/1/0947/7609/9133/files/Inserirumtitulo_8.png?v=1755836200"
         ]
       },
-    "pricing": {
-  "default_tier": "preco_197",
+"pricing": {
+  "default_tier": "preco_150",
   "tiers": {
-    "preco_197": {
-      "label": "Preço padrão — R$ 197,00",
-      "checkout_url": "https://entrega.logzz.com.br/pay/memmpxgmg/progcreme197"
-    },
-    "preco_170": {
-      "label": "Promo — R$ 170,00",
-      "checkout_url": "https://entrega.logzz.com.br/pay/memmpxgmg/progcreme170"
-    },
     "preco_150": {
-      "label": "À vista/Pix — R$ 150,00",
+      "label": "Preço único — R$ 150,00",
       "checkout_url": "https://entrega.logzz.com.br/pay/memmpxgmg/progcreme150"
     }
   }
 }
+
 
     }
   }
