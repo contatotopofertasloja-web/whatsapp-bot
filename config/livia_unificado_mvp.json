@@ -182,6 +182,38 @@
           "Pode pagar só quando receber, super seguro 🥰"
         ]
       },
+      {
+  "site": {
+    "canonical_url": "https://tpofertas.com/progressiva-vegetal",
+    "fallback_url": "https://5gqhfb-4y.myshopify.com/pages/landing-page-aug-17-15-30-50",
+    "testimonials_url": "https://tpofertas.com/depoimentos"
+  },
+
+  "product_catalog": {
+    "default_product_key": "progressiva_veg_prof",
+    "progressiva_veg_prof": {
+      "name": "Progressiva Vegetal Profissional",
+      "details": {
+        "volume_ml": 500
+      },
+      "media": {
+        "images": [
+          "https://SEU-CDN-OU-SHOPIFY-CDN/progressiva-vegetal-500ml.png"
+        ]
+      },
+      "pricing": {
+        "default_tier": "1_unidade",
+        "tiers": {
+          "1_unidade": {
+            "label": "1 unidade",
+            "checkout_url": "https://tpofertas.com/checkout/progressiva-vegetal" 
+          }
+        }
+      }
+    }
+  }
+}
+
       "closing": {
         "cta_soft": [
           "Quer que eu te mande o link com desconto exclusivo? 😍",
