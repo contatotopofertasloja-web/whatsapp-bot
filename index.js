@@ -121,7 +121,17 @@ function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) { if (!url) r
 // --- Intenções de compra + escolha de tier ---
 function isBuyIntent(txt = '') {
   const s = (txt || '').toLowerCase();
-  const kws = ['comprar','quero comprar','adquirir','finalizar','fechar','link','checkout','me manda o link','manda o link','preço','valor','quanto custa','quanto sai','desconto','promoção','pagar','pagamento'];
+
+  // palavras e expressões que indicam intenção de fechar compra / pedir link
+  const kws = [
+    'comprar', 'quero', 'quero comprar', 'adquirir',
+    'finalizar', 'fechar', 'fechar pedido', 'fechar compra',
+    'checkout', 'link', 'manda o link', 'me manda o link',
+    'manda', 'envia', 'me envia', 'pode enviar', 'pode mandar',
+    'ok manda', 'ok pode enviar',
+    'pix', 'pago', 'pagamento'
+  ];
+
   return kws.some(k => s.includes(k));
 }
 function normalize(str = '') { return String(str||'').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,''); }
