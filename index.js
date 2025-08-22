@@ -104,31 +104,39 @@ function tierURLFromText(txt = '') {
   const keys = Object.keys(PRICING_TIERS || {});
   if (!keys.length) return null;
 
-  // número isolado
-  const mNum = s.match(/\b([1-9])\b/);
-  if (mNum) {
-    const n = mNum[1];
-    const byNum = keys.find(k => normalize(k).includes(n));
-    if (byNum) return PRICING_TIERS[byNum]?.checkout_url || null;
+  const findBy = (needle) =>
+    keys.find(k =>
+      normalize(k).includes(needle) ||
+      normalize(PRICING_TIERS[k]?.label || '').includes(needle)
+    );
+
+  // 1) À vista / Pix -> 150
+  if (/\b150\b/.test(s) || /\b1\s*5\s*0\b/.test(s) || s.includes('pix') || s.includes('a vista') || s.includes('à vista') || s.includes('avista') || s.includes('dinheiro')) {
+    const k = findBy('150') || findBy('preco_150');
+    if (k) return PRICING_TIERS[k]?.checkout_url || null;
   }
 
-  // "kit 2" / "combo 3"
-  const mKit = s.match(/\b(kit|combo)\s*([1-9])\b/);
-  if (mKit) {
-    const n = mKit[2];
-    const byKit = keys.find(k => normalize(k).includes(n));
-    if (byKit) return PRICING_TIERS[byKit]?.checkout_url || null;
+  // 2) Promo / desconto / cupom -> 170
+  if (/\b170\b/.test(s) || s.includes('promo') || s.includes('desconto') || s.includes('cupom') || s.includes('oferta')) {
+    const k = findBy('170') || findBy('preco_170');
+    if (k) return PRICING_TIERS[k]?.checkout_url || null;
   }
 
-  // casa por nome do tier
+  // 3) Valor explícito 197 -> 197
+  if (/\b197\b/.test(s)) {
+    const k = findBy('197') || findBy('preco_197');
+    if (k) return PRICING_TIERS[k]?.checkout_url || null;
+  }
+
+  // 4) Casa por nome do tier/label (fallback geral)
   for (const k of keys) {
-    if (s.includes(normalize(k))) {
+    if (s.includes(normalize(k)) || s.includes(normalize(PRICING_TIERS[k]?.label || ''))) {
       const url = PRICING_TIERS[k]?.checkout_url || null;
       if (url) return url;
     }
   }
 
-  // fallback
+  // 5) Fallback para o default (197)
   return PRICING_DEFAULT_URL || null;
 }
 
