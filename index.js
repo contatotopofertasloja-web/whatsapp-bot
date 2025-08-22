@@ -3,7 +3,7 @@ import 'dotenv/config';
 
 // --- Libs ---
 import fs from 'fs';
-import path from 'path'; 
+import path from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import qrcode from 'qrcode';
@@ -17,6 +17,8 @@ const __dirname = path.dirname(__filename);
 
 // --- OpenAI ---
 const openai = new OpenAI({ apiKey: (process.env.OPENAI_API_KEY || '').trim() });
+const MODEL = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
+console.log('[GPT] Model em uso:', MODEL);
 
 // --- JSON da Lívia ---
 const LIVIA_CONFIG_PATH =
@@ -35,10 +37,9 @@ function safeLoadJSON(filePath) {
 const LIVIA = safeLoadJSON(LIVIA_CONFIG_PATH);
 const identityStrict = LIVIA.identity_strict || {};
 const persona = LIVIA.persona || {};
-// --- Blocos da Lívia (MVP) ---
-const BLOCOS_PATH =
-  process.env.BLOCOS_PATH || path.join(__dirname, 'config', 'blocos_livia_mvp.json');
 
+// --- Blocos da Lívia (MVP) ---
+const BLOCOS_PATH = process.env.BLOCOS_PATH || path.join(__dirname, 'config', 'blocos_livia_mvp.json');
 let BLOCOS = null;
 try {
   BLOCOS = JSON.parse(fs.readFileSync(BLOCOS_PATH, 'utf8'));
@@ -58,35 +59,10 @@ function buildSystemPromptBase(memSummary = '') {
     `Tom: ${style}. Responda em 1–2 frases, sem jargão.`,
     `Política de CTA: ${ctaPolicy}.`,
     `Produto foco: ${product}.`,
-    `RESUMO_7d: (vazio neste passo)`,
+    `RESUMO_7d: ${memSummary || '(vazio neste passo)'}`,
     `Se fizer sentido, use as frases sugeridas como inspiração — adapte e mantenha o tom natural.`
   ].join('\n');
 }
-
-function intentFor(text = '') {
-  const s = (text || '').toLowerCase();
-  if (/\b(oi|olá|bom dia|boa tarde|boa noite)\b/.test(s)) return 'greeting';
-  if (isPriceQuery?.(text))  return 'price';
-  if (isBuyIntent?.(text))   return 'buy';
-  return 'other';
-}
-
-function blockSuggestions(text = '') {
-  const blocks = BLOCOS?.blocks || {};
-  const intent = intentFor(text);
-
-  let pickOne = [];
-  if (intent === 'greeting' && blocks.B01_saudacao?.variants)   pickOne = blocks.B01_saudacao.variants;
-  else if (intent === 'price' && blocks.B04_objeções?.map?.preco) pickOne = blocks.B04_objeções.map.preco;
-  else if (intent === 'buy' && blocks.B05_fechamento?.variants) pickOne = blocks.B05_fechamento.variants;
-  else if (blocks.B02_qualificacao?.variants)                   pickOne = blocks.B02_qualificacao.variants;
-
-  if (!Array.isArray(pickOne) || !pickOne.length) return '';
-  const one = () => pickOne[Math.floor(Math.random() * pickOne.length)];
-  const uniq = Array.from(new Set([one(), one()])).filter(Boolean);
-  return uniq.length ? `Sugestões:\n- ${uniq.join('\n- ')}` : '';
-}
-
 
 // --- Produto (catálogo JSON + fallback) ---
 const DEFAULT_PRODUCT_KEY = LIVIA?.product_catalog?.default_product_key;
@@ -173,58 +149,40 @@ function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) { if (!url) r
 // --- Intenções de compra + escolha de tier ---
 function isBuyIntent(txt = '') {
   const s = (txt || '').toLowerCase();
-
-  // palavras e expressões que indicam intenção de fechar compra / pedir link
   const kws = [
-    'comprar', 'quero', 'quero comprar', 'adquirir',
-    'finalizar', 'fechar', 'fechar pedido', 'fechar compra',
-    'checkout', 'link', 'manda o link', 'me manda o link',
-    'manda', 'envia', 'me envia', 'pode enviar', 'pode mandar',
-    'ok manda', 'ok pode enviar',
-    'pix', 'pago', 'pagamento'
+    'comprar','quero','quero comprar','adquirir',
+    'finalizar','fechar','fechar pedido','fechar compra',
+    'checkout','link','manda o link','me manda o link',
+    'manda','envia','me envia','pode enviar','pode mandar',
+    'ok manda','ok pode enviar','pix','pago','pagamento'
   ];
-
   return kws.some(k => s.includes(k));
 }
 function normalize(str = '') { return String(str||'').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,''); }
+
+// Simplificado: se não houver PRICING_DEFAULT_URL, usa o link fixo de R$ 150,00
 function tierURLFromText(_txt = '') {
-  // Preço único de R$ 150,00
   return PRICING_DEFAULT_URL || 'https://entrega.logzz.com.br/pay/memmpxgmg/progcreme150';
 }
 
-
-// --- Anti-repetição + fechamento inteligente ---
+// --- Anti-repetição + abertura/fechamento natural ---
 function isDeliveryQuery(t){ return /\b(entrega|prazo|frete|chega|demora)\b/i.test(t||''); }
 function isBenefitsQuery(t){ return /\b(benef[ií]cios?|vantagens?|diferenciais?)\b/i.test(t||''); }
 function isPriceQuery(t){ return /\b(pre[cç]o|valor|custa|quanto)\b/i.test(t||''); }
+
 const GENERIC_CLOSERS = ['Como posso te ajudar mais?','Como posso ser útil hoje?','Como posso te ajudar hoje?'];
+const SOFT_CLOSERS = ['Te mando o link?','Quer o link agora?','Te envio rapidinho?','Posso te orientar no passo a passo?'];
+const SOFT_OPENERS = ['Opa!','Beleza 🙂','Show!','Claro!','Perfeito.'];
+
+function pickOne(arr){ return arr[Math.floor(Math.random() * arr.length)] || ''; }
+
 function smartClosingQuestion(userText){
   if (isDeliveryQuery(userText)) return 'Me passa seu CEP para eu calcular o prazo certinho?';
   if (isBenefitsQuery(userText)) return 'Quer que eu te mostre como aplicar passo a passo?';
   if (isPriceQuery(userText)) return 'Você pensa em 1, 2 ou 3 unidades?';
   if (isProductQuery(userText)) return 'Prefere um resultado liso intenso ou mais natural?';
   return 'Posso te ajudar em mais algum ponto?';
-  }
-// --- Fechamentos curtos e naturais ---
-const SOFT_CLOSERS = [
-  'Te mando o link?',
-  'Quer o link agora?',
-  'Te envio rapidinho?',
-  'Posso te orientar no passo a passo?'
-];
-
-// Abridores leves (opcionais)
-const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
-
-// util de pickOne (mantenha apenas UMA no arquivo)
-function pickOne(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
-
-// helpers de pós-processamento
-// Abridores leves (opcionais)
-const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
-
-// === Helpers de pós-processamento (sem conflitos) ===
-function pickOne(arr){ return arr[Math.floor(Math.random() * arr.length)] || ''; }
+}
 
 function stripRepeatedClosers(txt){
   let out = txt || '';
@@ -234,17 +192,22 @@ function stripRepeatedClosers(txt){
   }
   return out;
 }
-
 function limitEmojis(txt){
   const all = (txt||'').match(/\p{Extended_Pictographic}/gu) || [];
   if (all.length <= 1) return txt;
   let kept = false;
-  return (txt||'').replace(/\p{Extended_Pictographic}/gu, () => kept ? '' : (kept = true, ''));
+  return (txt||'').replace(/\p{Extended_Pictographic}/gu, m => kept ? '' : (kept = true, m));
 }
-
 function limitSentences(txt, max = 2){
   const parts = (txt||'').split(/(?<=\.)\s+/).filter(Boolean);
   return parts.slice(0, max).join(' ').trim() || txt;
+}
+
+function maybeSoftOpen(out, userText){
+  if (/^\s*(oi|ol[aá]|bom dia|boa tarde|boa noite)\b/i.test(userText)) {
+    return `${pickOne(SOFT_OPENERS)} ${out}`.trim();
+  }
+  return out;
 }
 
 function polishReply(reply, userText){
@@ -260,78 +223,38 @@ function polishReply(reply, userText){
   out = limitSentences(out, 2);
   out = limitEmojis(out);
 
-  // abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
-  if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
-    out = `${pickOne(SOFT_OPENERS)} ${out}`.trim();
-  }
-
-  const closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
-  if (closing && !/[?!]$/.test(out)) {
-    out = `${out} ${closing}`;
-  }
-
-  return out;
-}
-
-  // remove “posso te enviar o link...” quando não é CTA
-  if (!isBuyIntent(userText)) {
-    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
-  }
-
-  // pós-processamento
-  out = stripRepeatedClosers(out);
-  out = limitSentences(out, 2);
-  out = limitEmojis(out);
-
-  // abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
-  if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
-    out = `${pickOne(SOFT_OPENERS)} ${out}`.trim();
-  }
+  // abridor leve quando faz sentido
+  out = maybeSoftOpen(out, userText);
 
   const closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
   if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
-
-  return out;
+  return out.trim();
 }
 
-
-
-  // Se não for CTA, remove “posso te enviar o link...” que o modelo às vezes adiciona
-  if (!isBuyIntent(userText)) {
-    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
-  }
-
-  out = stripRepeatedClosers(out);
-  out = limitSentences(out, 2);   // respostas mais curtas
-  out = limitEmojis(out);
-
-  // Abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
-  if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
-    out = `${pickOne(SOFT_OPENERS)} ${out}`.trim();
-  }
-
-  let closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
-  if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
-
-  return out;
+// --- Intent + sugestões de blocos (agora que helpers já existem) ---
+function intentFor(text = '') {
+  const s = (text || '').toLowerCase();
+  if (/\b(oi|olá|ola|bom dia|boa tarde|boa noite)\b/.test(s)) return 'greeting';
+  if (isPriceQuery(text))  return 'price';
+  if (isBuyIntent(text))   return 'buy';
+  return 'other';
 }
+function blockSuggestions(text = '') {
+  const blocks = BLOCOS?.blocks || {};
+  const intent = intentFor(text);
 
+  let pickArr = [];
+  if (intent === 'greeting' && blocks?.B01_saudacao?.variants) pickArr = blocks.B01_saudacao.variants;
+  else if (intent === 'price') {
+    const b04 = blocks['B04_objeções'] || blocks['B04_objecoes'];
+    if (b04?.map?.preco) pickArr = b04.map.preco;
+  } else if (intent === 'buy' && blocks?.B05_fechamento?.variants) pickArr = blocks.B05_fechamento.variants;
+  else if (blocks?.B02_qualificacao?.variants) pickArr = blocks.B02_qualificacao.variants;
 
-  
-
-  // Se não for CTA, tira “posso te enviar o link...” que o modelo às vezes adiciona
-  if (!isBuyIntent(userText)) {
-    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
-  }
-
-  out = stripRepeatedClosers(out);
-  out = limitSentences(out, 2);    // respostas mais curtas (máx. 2 frases)
-  out = limitEmojis(out);
-
-  let closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
-  if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
-
-  return out;
+  if (!Array.isArray(pickArr) || !pickArr.length) return '';
+  const one = () => pickArr[Math.floor(Math.random() * pickArr.length)];
+  const uniq = Array.from(new Set([one(), one()])).filter(Boolean);
+  return uniq.length ? `Sugestões:\n- ${uniq.join('\n- ')}` : '';
 }
 
 // --- Prompt do sistema (persona + produto + regras) ---
@@ -376,7 +299,7 @@ let sock; let qrCodeData = null; let wppReady = false;
 // --- Baileys ---
 async function startBaileys() {
   try {
-const { state, saveCreds } = await useMultiFileAuthState('/app/baileys-auth');
+    const { state, saveCreds } = await useMultiFileAuthState('/app/baileys-auth');
     const { version } = await fetchLatestBaileysVersion();
     sock = makeWASocket({ version, auth: state, printQRInTerminal: false });
 
@@ -398,56 +321,43 @@ const { state, saveCreds } = await useMultiFileAuthState('/app/baileys-auth');
         console.log(`[MSG] ${from}: ${text}`);
 
         const history = await loadHistory(from);
-       // (mantém isto) const history = await loadHistory(from);
 
-// APAGUE estas duas linhas antigas:
-// const system = buildSystemPrompt();
-// const messages = [ ... ]
+        // Hints + blocos
+        const hints = [];
+        if (isProductQuery(text)) {
+          hints.push(`ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva sem formol).`);
+        }
+        const sys = buildSystemPromptBase('');
+        const suggest = blockSuggestions(text);
 
-// Deixe os hints como já estão
-const hints = [];
-if (isProductQuery(text)) {
-  hints.push(`ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva sem formol).`);
-}
-
-// P2 — prompt base + sugestões de blocos
-const sys = buildSystemPromptBase('');      // memSummary vazio (P3 entra depois)
-const suggest = blockSuggestions(text);
-
-// messages final (mantém hints e history)
-const messages = [
-  { role: 'system', content: suggest ? `${sys}\n\n${suggest}` : sys },
-  ...hints.map(h => ({ role: 'system', content: h })),
-  ...history,
-  { role: 'user', content: text }
-];
-
+        const messages = [
+          { role: 'system', content: suggest ? `${sys}\n\n${suggest}` : sys },
+          ...hints.map(h => ({ role: 'system', content: h })),
+          ...history,
+          { role: 'user', content: text }
+        ];
 
         try {
-          // Defina antes no topo, perto do OpenAI:
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-console.log('[GPT] Model em uso:', MODEL);
-
-
-const completion = await openai.chat.completions.create({
-  model: MODEL,
-  messages,
-  temperature: 0.8,      // + solta, porém ainda controlada
-  top_p: 0.9,
-  frequency_penalty: 0.3, // evita repetir frases
-  presence_penalty: 0.2   // incentiva variar um pouco
-});
-
-
+          const completion = await openai.chat.completions.create({
+            model: MODEL,
+            messages,
+            temperature: 0.8,
+            top_p: 0.9,
+            frequency_penalty: 0.3,
+            presence_penalty: 0.2
+          });
 
           const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
           let polished = polishReply(reply, text);
-if (isPriceQuery(text)) {
-  polished = 'Hoje estamos com preço promocional: de R$ 197,00 por R$ 150,00. O estoque está acabando, Quer o link para aproveitar a oferta?';
-}
+
+          // Texto de preço promocional (sua regra atual)
+          if (isPriceQuery(text)) {
+            polished = 'Hoje estamos com preço promocional: de R$ 197,00 por R$ 150,00. O estoque está acabando, quer o link para aproveitar a oferta?';
+          }
 
           await sendTypingMessage(sock, from, polished);
 
+          // CTA automático se houver intenção
           try {
             if ((isBuyIntent(text) || isPriceQuery(text)) && !replyHasURL(polished)) {
               const tierUrl = tierURLFromText(text) || PRICING_DEFAULT_URL;
@@ -469,14 +379,14 @@ if (isPriceQuery(text)) {
 }
 startBaileys();
 
-
+function replyHasURL(txt = '') { return /https?:\/\/\S+/i.test(txt || ''); }
 
 // --- Express ---
 const app = express();
 
 app.get('/health', (_, res) => res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData }));
 
-// Versão do build e modelo (mantenha UMA vez só)
+// Versão do build e modelo
 const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
 app.get('/version', (_req, res) => {
   res.json({ ok: true, build: BUILD_TAG, model: MODEL });
