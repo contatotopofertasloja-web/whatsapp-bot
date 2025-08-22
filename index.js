@@ -247,6 +247,7 @@ function polishReply(reply, userText){
     out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
   }
 
+  // pós-processamento
   out = stripRepeatedClosers(out);
   out = limitSentences(out, 2);
   out = limitEmojis(out);
@@ -256,13 +257,12 @@ function polishReply(reply, userText){
     out = `${pick(SOFT_OPENERS)} ${out}`.trim();
   }
 
-  let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  const closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
   if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
-let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
-if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
 
-return out;
+  return out;
 }
+
 
 
   // Se não for CTA, remove “posso te enviar o link...” que o modelo às vezes adiciona
