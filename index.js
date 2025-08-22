@@ -79,7 +79,6 @@ function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) {
   const msg = formatCheckoutCTA(url);
   return sendTypingMessage(sock, jid, msg);
 }
-
 // -------- Prompt do sistema (consolidado H1 + H2)
 function buildSystemPrompt() {
   const name = identityStrict.always_name || 'Lívia Martins';
@@ -103,10 +102,15 @@ function buildSystemPrompt() {
     benefitsTxt,
     diffTxt,
     `${entregaTxt} ${codTxt}`,
-    PRICING_DEFAULT_URL ? `Quando houver intenção de compra, apresente o checkout usando este template: "${CHECKOUT_CTA_TEMPLATE}".` : ``,
+    PRICING_DEFAULT_URL
+      ? `Quando houver intenção de compra, apresente o checkout usando este template: "${CHECKOUT_CTA_TEMPLATE}".`
+      : ``,
+    `Nunca escreva "{{checkout_url}}" nas respostas; o link real será enviado separadamente quando a cliente pedir.`,
     `Se a cliente perguntar "tem progressiva?" ou variações, interprete como o produto "${PRODUCT_NAME}" (não como serviço).`
   ].filter(Boolean).join(' ');
 }
+
+
 
 // -------- Redis (histórico por JID) --------
 const REDIS_URL = (process.env.REDIS_URL || '').trim();
