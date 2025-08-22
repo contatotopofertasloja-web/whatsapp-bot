@@ -324,8 +324,9 @@ async function startBaileys() {
             temperature: 0.6,
           });
 
-          const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
-          await sendTypingMessage(sock, from, reply);
+ const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
+const polished = polishReply(reply, text);
+await sendTypingMessage(sock, from, polished);
 
           const newHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: reply }];
           await saveHistory(from, newHist);
