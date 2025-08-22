@@ -316,31 +316,46 @@ if (isPriceQuery(text)) {
 }
 startBaileys();
 
-// --- Versão do modelo ---
-
-app.get('/version', (_req, res) => {
-  res.json({ ok: true, build: BUILD_TAG, model: MODEL });
-});
 
 
 // --- Express ---
 const app = express();
+
 app.get('/health', (_, res) => res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData }));
+
+// Versão do build e modelo (mantenha UMA vez só)
 const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
-app.get('/version', (_req, res) => res.json({ ok: true, build: BUILD_TAG }));
+app.get('/version', (_req, res) => {
+  res.json({ ok: true, build: BUILD_TAG, model: MODEL });
+});
+
 app.get('/livia-info', (_req, res) => {
   const loaded = !!LIVIA && Object.keys(LIVIA || {}).length > 0;
   res.json({ loaded, path: LIVIA_CONFIG_PATH, name: LIVIA?.name || null, version: LIVIA?.version || null });
 });
+
 app.get('/redis-ping', async (_req, res) => {
-  try { const cli = await getRedis(); if (!cli) return res.json({ ok: false, msg: 'REDIS_URL não setada' }); const pong = await cli.ping(); res.json({ ok: true, pong, ttl: HISTORY_TTL }); }
-  catch (e) { res.status(500).json({ ok: false, error: e?.message || String(e) }); }
+  try {
+    const cli = await getRedis();
+    if (!cli) return res.json({ ok: false, msg: 'REDIS_URL não setada' });
+    const pong = await cli.ping();
+    res.json({ ok: true, pong, ttl: HISTORY_TTL });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
-app.get('/qr', async (_req, res) => { if (!qrCodeData) return res.status(400).json({ error: 'QR não disponível' }); res.setHeader('Content-Type', 'image/png'); res.send(await qrcode.toBuffer(qrCodeData)); });
+
+app.get('/qr', async (_req, res) => {
+  if (!qrCodeData) return res.status(400).json({ error: 'QR não disponível' });
+  res.setHeader('Content-Type', 'image/png');
+  res.send(await qrcode.toBuffer(qrCodeData));
+});
+
 app.get('/qr-page', async (_req, res) => {
   if (!qrCodeData) return res.send('<h1>✅ WhatsApp conectado!</h1>');
   const qrPng = await qrcode.toDataURL(qrCodeData);
   res.send(`<html><body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;"><h2>Escaneie o QR Code abaixo</h2><img src="${qrPng}" width="300" height="300"/></body></html>`);
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
