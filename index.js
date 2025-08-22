@@ -316,6 +316,13 @@ if (isPriceQuery(text)) {
 }
 startBaileys();
 
+// --- Versão do modelo ---
+
+app.get('/version', (_req, res) => {
+  res.json({ ok: true, build: BUILD_TAG, model: MODEL });
+});
+
+
 // --- Express ---
 const app = express();
 app.get('/health', (_, res) => res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData }));
