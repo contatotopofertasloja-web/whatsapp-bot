@@ -136,8 +136,8 @@ function isBuyIntent(txt = '') {
 }
 function normalize(str = '') { return String(str||'').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,''); }
 function tierURLFromText(_txt = '') {
-  // Agora temos preço único (R$ 150), então sempre devolve o default
-  return PRICING_DEFAULT_URL || null;
+  // Preço único de R$ 150,00
+  return PRICING_DEFAULT_URL || 'https://entrega.logzz.com.br/pay/memmpxgmg/progcreme150';
 }
 
 // --- Preços canônicos (anti-alucinação) ---
