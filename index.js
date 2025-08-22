@@ -11,16 +11,14 @@ import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } from '
 import OpenAI from 'openai';
 import { createClient } from 'redis';
 
-// -------- util de caminho (__dirname em ESM) --------
+// util __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// -------- OpenAI --------
-const openai = new OpenAI({
-  apiKey: (process.env.OPENAI_API_KEY || '').trim(),
-});
+// --- OpenAI ---
+const openai = new OpenAI({ apiKey: (process.env.OPENAI_API_KEY || '').trim() });
 
-// -------- Config da Lívia (JSON) --------
+// --- JSON da Lívia ---
 const LIVIA_CONFIG_PATH =
   (process.env.LIVIA_CONFIG_PATH && process.env.LIVIA_CONFIG_PATH.trim()) ||
   path.join(__dirname, 'config', 'livia_unificado_mvp.json');
@@ -38,15 +36,31 @@ const LIVIA = safeLoadJSON(LIVIA_CONFIG_PATH);
 const identityStrict = LIVIA.identity_strict || {};
 const persona = LIVIA.persona || {};
 
-// --- Produto foco básico (H1)
-const productFocus =
+// --- Produto (catálogo JSON + fallback) ---
+const DEFAULT_PRODUCT_KEY = LIVIA?.product_catalog?.default_product_key;
+const PRODUCT =
+  (DEFAULT_PRODUCT_KEY && LIVIA?.product_catalog?.[DEFAULT_PRODUCT_KEY]) ||
   LIVIA?.product_focus ||
   LIVIA?.product ||
-  (LIVIA?.product_catalog?.[LIVIA?.product_catalog?.default_product_key]) ||
-  { name: 'Progressiva Vegetal', type: 'cosmético', payment: 'Pagamento na Entrega (COD)' };
+  { name: 'Progressiva Vegetal Profissional' };
 
-const PRODUCT_SYNONYMS = Array.isArray(productFocus?.synonyms) && productFocus.synonyms.length
-  ? productFocus.synonyms
+const PRODUCT_NAME = PRODUCT?.name || 'Progressiva Vegetal Profissional';
+const BENEFITS = Array.isArray(PRODUCT?.benefits) ? PRODUCT.benefits : [];
+const DIFFERENTIALS = Array.isArray(PRODUCT?.differentials) ? PRODUCT.differentials : [];
+const DELIVERY = PRODUCT?.delivery || {}; // { avg_days_min, avg_days_max, ... }
+
+const PRICING = PRODUCT?.pricing || {};
+const PRICING_TIERS = PRICING?.tiers || {};
+const PRICING_DEFAULT_TIER = PRICING?.default_tier || Object.keys(PRICING_TIERS)[0] || null;
+const PRICING_DEFAULT_URL = PRICING_DEFAULT_TIER ? (PRICING_TIERS[PRICING_DEFAULT_TIER]?.checkout_url || null) : null;
+
+// FAQ / templates
+const FAQ = LIVIA?.faq_cod_entregas || {};
+const CHECKOUT_CTA_TEMPLATE = FAQ?.rules?.checkout_cta_template || 'Aqui está seu link de checkout seguro 👉 {{checkout_url}}';
+
+// --- Sinônimos (detectar "progressiva" como produto) ---
+const PRODUCT_SYNONYMS = Array.isArray(PRODUCT?.synonyms) && PRODUCT.synonyms.length
+  ? PRODUCT.synonyms
   : ['progressiva vegetal', 'progressiva', 'escova progressiva', 'alisamento', 'alisante', 'botox capilar vegetal'];
 
 function isProductQuery(txt = '') {
@@ -54,87 +68,104 @@ function isProductQuery(txt = '') {
   return PRODUCT_SYNONYMS.some(w => s.includes(w));
 }
 
-// --- BLOCO 03A: Produto padrão do catálogo (H2)
-const DEFAULT_PRODUCT_KEY = LIVIA?.product_catalog?.default_product_key;
-const PRODUCT = (DEFAULT_PRODUCT_KEY && LIVIA?.product_catalog?.[DEFAULT_PRODUCT_KEY]) || productFocus || {};
+// --- Redis (histórico por JID) ---
+const REDIS_URL = (process.env.REDIS_URL || '').trim();
+const HISTORY_TTL = Math.max(0, parseInt(process.env.HISTORY_TTL_SECONDS || '604800', 10)); // 7 dias
 
-const PRODUCT_NAME = PRODUCT?.name || 'Progressiva Vegetal';
-const BENEFITS = Array.isArray(PRODUCT?.benefits) ? PRODUCT.benefits : [];
-const DIFFERENTIALS = Array.isArray(PRODUCT?.differentials) ? PRODUCT.differentials : [];
-const DELIVERY = PRODUCT?.delivery || {}; // { avg_days_min, avg_days_max, note, tracking_by }
-
-const PRICING = PRODUCT?.pricing || {};
-const PRICING_TIERS = PRICING?.tiers || {};
-const PRICING_DEFAULT_TIER = PRICING?.default_tier || Object.keys(PRICING_TIERS)[0] || null;
-const PRICING_DEFAULT_URL = PRICING_DEFAULT_TIER ? (PRICING_TIERS[PRICING_DEFAULT_TIER]?.checkout_url || null) : null;
-
-// BLOCO 02: Regras de COD/Entrega (templates)
-const FAQ = LIVIA?.faq_cod_entregas || {};
-const CHECKOUT_CTA_TEMPLATE = FAQ?.rules?.checkout_cta_template || 'Aqui está seu link 👉 {{checkout_url}}';
-function formatCheckoutCTA(url) {
-  return (CHECKOUT_CTA_TEMPLATE || 'Link: {{checkout_url}}').replace('{{checkout_url}}', url || '');
+let _redisClient = null;
+async function getRedis() {
+  if (!REDIS_URL) { console.warn('[REDIS] REDIS_URL não configurada — histórico desativado.'); return null; }
+  if (_redisClient) return _redisClient;
+  const client = createClient({ url: REDIS_URL });
+  client.on('error', (err) => console.error('[REDIS] error:', err?.message || err));
+  await client.connect();
+  console.log('[REDIS] conectado.');
+  _redisClient = client;
+  return _redisClient;
 }
-function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) {
-  if (!url) return null;
-  const msg = formatCheckoutCTA(url);
-  return sendTypingMessage(sock, jid, msg);
+
+const HIST_LIMIT = 24;
+const histKey = (jid) => `hist:${jid}`;
+async function loadHistory(jid) {
+  try { const cli = await getRedis(); if (!cli) return []; const raw = await cli.get(histKey(jid)); return raw ? (JSON.parse(raw) || []) : []; }
+  catch { return []; }
 }
-// --- Intenções de compra e escolha de tier ---
+async function saveHistory(jid, msgs) {
+  try {
+    const cli = await getRedis(); if (!cli) return;
+    const data = JSON.stringify((msgs || []).slice(-HIST_LIMIT));
+    if (HISTORY_TTL > 0) await cli.set(histKey(jid), data, { EX: HISTORY_TTL }); else await cli.set(histKey(jid), data);
+  } catch {}
+}
+
+// --- Delay + “digitando...” ---
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function sendTypingMessage(sock, jid, message) {
+  try {
+    await sock.presenceSubscribe(jid);
+    await sock.sendPresenceUpdate('composing', jid);
+    const delay = Math.min(3500, Math.max(500, (message || '').length * 25));
+    await sleep(delay);
+    await sock.sendMessage(jid, { text: message });
+  } catch (e) {
+    try { await sock.sendMessage(jid, { text: message }); } catch {}
+  } finally {
+    try { await sock.sendPresenceUpdate('paused', jid); } catch {}
+  }
+}
+
+// --- Checkout helpers ---
+function formatCheckoutCTA(url) { return (CHECKOUT_CTA_TEMPLATE || 'Link: {{checkout_url}}').replace('{{checkout_url}}', url || ''); }
+function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) { if (!url) return null; return sendTypingMessage(sock, jid, formatCheckoutCTA(url)); }
+
+// --- Intenções de compra + escolha de tier ---
 function isBuyIntent(txt = '') {
   const s = (txt || '').toLowerCase();
-  const kws = [
-    'comprar', 'quero comprar', 'adquirir', 'finalizar', 'fechar',
-    'link', 'checkout', 'me manda o link', 'manda o link',
-    'preço', 'valor', 'quanto custa', 'quanto sai',
-    'desconto', 'promoção', 'pagar', 'pagamento'
-  ];
+  const kws = ['comprar','quero comprar','adquirir','finalizar','fechar','link','checkout','me manda o link','manda o link','preço','valor','quanto custa','quanto sai','desconto','promoção','pagar','pagamento'];
   return kws.some(k => s.includes(k));
 }
-
-function normalize(str = '') {
-  return String(str || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '');
-}
-
-// tenta descobrir o tier pelo texto (ex.: "quero 2", "combo 3", "kit 2")
+function normalize(str = '') { return String(str||'').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,''); }
 function tierURLFromText(txt = '') {
   const s = normalize(txt);
-  const keys = Object.keys(PRICING_TIERS || {});
-  if (!keys.length) return null;
+  const keys = Object.keys(PRICING_TIERS || {}); if (!keys.length) return null;
+  const findBy = (needle) => keys.find(k => normalize(k).includes(needle) || normalize(PRICING_TIERS[k]?.label || '').includes(needle));
+  if (/\b150\b/.test(s) || /\b1\s*5\s*0\b/.test(s) || s.includes('pix') || s.includes('a vista') || s.includes('à vista') || s.includes('avista') || s.includes('dinheiro')) {
+    const k = findBy('150') || findBy('preco_150'); if (k) return PRICING_TIERS[k]?.checkout_url || null;
+  }
+  if (/\b170\b/.test(s) || s.includes('promo') || s.includes('desconto') || s.includes('cupom') || s.includes('oferta')) {
+    const k = findBy('170') || findBy('preco_170'); if (k) return PRICING_TIERS[k]?.checkout_url || null;
+  }
+  if (/\b197\b/.test(s)) {
+    const k = findBy('197') || findBy('preco_197'); if (k) return PRICING_TIERS[k]?.checkout_url || null;
+  }
+  for (const k of keys) {
+    if (s.includes(normalize(k)) || s.includes(normalize(PRICING_TIERS[k]?.label || ''))) {
+      const url = PRICING_TIERS[k]?.checkout_url || null; if (url) return url;
+    }
+  }
+  return PRICING_DEFAULT_URL || null;
+}
+function replyHasURL(txt = '') { return /https?:\/\/\S+/i.test(txt || ''); }
 
-  const findBy = (needle) =>
-    keys.find(k =>
-      normalize(k).includes(needle) ||
-      normalize(PRICING_TIERS[k]?.label || '').includes(needle)
-    );
-// --- Preços canônicos (impede alucinação) ---
+// --- Preços canônicos (anti-alucinação) ---
 function formatBRL(n){ return `R$ ${Number(n).toFixed(2).replace('.', ',')}`; }
-
 function tierEntriesWithPrice(){
   const out = [];
   for (const [key, tier] of Object.entries(PRICING_TIERS || {})) {
     const blob = `${key} ${tier?.label || ''} ${tier?.checkout_url || ''}`.toLowerCase();
-    const price =
-      blob.includes('197') ? 197 :
-      blob.includes('170') ? 170 :
-      blob.includes('150') ? 150 : null;
+    const price = blob.includes('197') ? 197 : blob.includes('170') ? 170 : blob.includes('150') ? 150 : null;
     out.push({ key, price, url: tier?.checkout_url || null, label: tier?.label || key });
   }
   return out.filter(x => x.url);
 }
-
 function canonicalPriceText(){
-  const items = tierEntriesWithPrice();
-  if (!items.length) return '';
+  const items = tierEntriesWithPrice(); if (!items.length) return '';
   const parts = [];
   if (items.find(i => i.price === 197)) parts.push(`${formatBRL(197)} (padrão)`);
   if (items.find(i => i.price === 170)) parts.push(`${formatBRL(170)} (promo)`);
   if (items.find(i => i.price === 150)) parts.push(`${formatBRL(150)} (à vista/Pix)`);
   return `Temos estas opções: ${parts.join(' · ')}.`;
 }
-
 function composePriceReply(userText){
   const base = canonicalPriceText();
   const follow =
@@ -146,51 +177,11 @@ function composePriceReply(userText){
   return `${base} ${follow}`;
 }
 
-  // 1) À vista / Pix -> 150
-  if (/\b150\b/.test(s) || /\b1\s*5\s*0\b/.test(s) || s.includes('pix') || s.includes('a vista') || s.includes('à vista') || s.includes('avista') || s.includes('dinheiro')) {
-    const k = findBy('150') || findBy('preco_150');
-    if (k) return PRICING_TIERS[k]?.checkout_url || null;
-  }
-
-  // 2) Promo / desconto / cupom -> 170
-  if (/\b170\b/.test(s) || s.includes('promo') || s.includes('desconto') || s.includes('cupom') || s.includes('oferta')) {
-    const k = findBy('170') || findBy('preco_170');
-    if (k) return PRICING_TIERS[k]?.checkout_url || null;
-  }
-
-  // 3) Valor explícito 197 -> 197
-  if (/\b197\b/.test(s)) {
-    const k = findBy('197') || findBy('preco_197');
-    if (k) return PRICING_TIERS[k]?.checkout_url || null;
-  }
-
-  // 4) Casa por nome do tier/label (fallback geral)
-  for (const k of keys) {
-    if (s.includes(normalize(k)) || s.includes(normalize(PRICING_TIERS[k]?.label || ''))) {
-      const url = PRICING_TIERS[k]?.checkout_url || null;
-      if (url) return url;
-    }
-  }
-
-  // 5) Fallback para o default (197)
-  return PRICING_DEFAULT_URL || null;
-}
-
-function replyHasURL(txt = '') {
-  return /https?:\/\/\S+/i.test(txt || '');
-}
-
-// --- Anti-repetição e fechamento inteligente ---
+// --- Anti-repetição + fechamento inteligente ---
 function isDeliveryQuery(t){ return /\b(entrega|prazo|frete|chega|demora)\b/i.test(t||''); }
 function isBenefitsQuery(t){ return /\b(benef[ií]cios?|vantagens?|diferenciais?)\b/i.test(t||''); }
 function isPriceQuery(t){ return /\b(pre[cç]o|valor|custa|quanto)\b/i.test(t||''); }
-
-const GENERIC_CLOSERS = [
-  'Como posso te ajudar mais?',
-  'Como posso ser útil hoje?',
-  'Como posso te ajudar hoje?'
-];
-
+const GENERIC_CLOSERS = ['Como posso te ajudar mais?','Como posso ser útil hoje?','Como posso te ajudar hoje?'];
 function smartClosingQuestion(userText){
   if (isDeliveryQuery(userText)) return 'Me passa seu CEP para eu calcular o prazo certinho?';
   if (isBenefitsQuery(userText)) return 'Quer que eu te mostre como aplicar passo a passo?';
@@ -198,52 +189,26 @@ function smartClosingQuestion(userText){
   if (isProductQuery(userText)) return 'Prefere um resultado liso intenso ou mais natural?';
   return 'Posso te ajudar em mais algum ponto?';
 }
-
-function stripRepeatedClosers(txt){
-  let out = txt || '';
-  for (const c of GENERIC_CLOSERS){
-    const re = new RegExp(c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
-    out = out.replace(re, '').trim();
-  }
-  return out;
-}
-
-function limitEmojis(txt){
-  const all = (txt||'').match(/\p{Extended_Pictographic}/gu) || [];
-  if (all.length <= 1) return txt;
-  let kept = false;
-  return (txt||'').replace(/\p{Extended_Pictographic}/gu, m => kept ? '' : (kept = true, m));
-}
-
-function limitSentences(txt, max=3){
-  const parts = (txt||'').split(/(?<=\.)\s+/).filter(Boolean);
-  return parts.slice(0, max).join(' ').trim() || txt;
-}
-
-function polishReply(reply, userText){
+function stripRepeatedClosers(txt){ let out = txt||''; for (const c of GENERIC_CLOSERS){ const re = new RegExp(c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'); out = out.replace(re,'').trim(); } return out; }
+function limitEmojis(txt){ const all=(txt||'').match(/\p{Extended_Pictographic}/gu)||[]; if(all.length<=1) return txt; let kept=false; return (txt||'').replace(/\p{Extended_Pictographic}/gu,m=> kept? '' : (kept=true,m)); }
+function limitSentences(txt,max=3){ const parts=(txt||'').split(/(?<=\.)\s+/).filter(Boolean); return parts.slice(0,max).join(' ').trim()||txt; }
+function polishReply(reply,userText){
   let out = reply || '';
-
-  // Evitar CTA texto quando não há intenção de compra
-  if (!isBuyIntent(userText)){
-    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
-  }
-
+  if (!isBuyIntent(userText)) out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi,'').trim();
   out = stripRepeatedClosers(out);
-  out = limitSentences(out, 3);
+  out = limitSentences(out,3);
   out = limitEmojis(out);
-
   const closing = smartClosingQuestion(userText);
   if (closing && !out.endsWith('?')) out = `${out} ${closing}`;
   return out.trim();
 }
 
-// -------- Prompt do sistema (consolidado H1 + H2)
+// --- Prompt do sistema (persona + produto + regras) ---
 function buildSystemPrompt() {
   const name = identityStrict.always_name || 'Lívia Martins';
-  const forbidBot = identityStrict.never_reveal_bot !== false; // default true
+  const forbidBot = identityStrict.never_reveal_bot !== false;
   const city = persona.city || 'Brasília';
   const brand = persona.brand || 'TopOfertas Express';
-
   const entregaTxt = (DELIVERY?.avg_days_min && DELIVERY?.avg_days_max)
     ? `Entrega média ${DELIVERY.avg_days_min} a ${DELIVERY.avg_days_max} dias úteis.`
     : `Entrega rápida (em dias úteis).`;
@@ -260,155 +225,52 @@ function buildSystemPrompt() {
     benefitsTxt,
     diffTxt,
     `${entregaTxt} ${codTxt}`,
-    PRICING_DEFAULT_URL
-      ? `Quando houver intenção de compra, apresente o checkout usando este template: "${CHECKOUT_CTA_TEMPLATE}".`
-      : ``,
+    PRICING_DEFAULT_URL ? `Quando houver intenção de compra, apresente o checkout usando este template: "${CHECKOUT_CTA_TEMPLATE}".` : ``,
     `Nunca escreva "{{checkout_url}}" nas respostas; o link real será enviado separadamente quando a cliente pedir.`,
     `Se a cliente perguntar "tem progressiva?" ou variações, interprete como o produto "${PRODUCT_NAME}" (não como serviço).`
   ].filter(Boolean).join(' ');
 }
 
-
-
-// -------- Redis (histórico por JID) --------
-const REDIS_URL = (process.env.REDIS_URL || '').trim();
-const HISTORY_TTL = Math.max(0, parseInt(process.env.HISTORY_TTL_SECONDS || '604800', 10)); // 7 dias padrão
-
-let _redisClient = null;
-async function getRedis() {
-  if (!REDIS_URL) {
-    console.warn('[REDIS] REDIS_URL não configurada — histórico desativado.');
-    return null;
-  }
-  if (_redisClient) return _redisClient;
-  const client = createClient({ url: REDIS_URL });
-  client.on('error', (err) => console.error('[REDIS] error:', err?.message || err));
-  await client.connect();
-  console.log('[REDIS] conectado.');
-  _redisClient = client;
-  return _redisClient;
+// --- Helpers WhatsApp ---
+function extractText(m){
+  return m?.message?.conversation ||
+         m?.message?.extendedTextMessage?.text ||
+         m?.message?.imageMessage?.caption ||
+         m?.message?.videoMessage?.caption || '';
 }
 
-const HIST_LIMIT = 24; // últimas 24 mensagens (12 trocas)
-function histKey(jid) {
-  return `hist:${jid}`;
-}
-async function loadHistory(jid) {
-  try {
-    const cli = await getRedis();
-    if (!cli) return [];
-    const raw = await cli.get(histKey(jid));
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) {
-    console.warn('[HIST] load falhou:', e?.message || e);
-    return [];
-  }
-}
-async function saveHistory(jid, msgs) {
-  try {
-    const cli = await getRedis();
-    if (!cli) return;
-    const slice = (msgs || []).slice(-HIST_LIMIT);
-    const data = JSON.stringify(slice);
-    if (HISTORY_TTL > 0) {
-      await cli.set(histKey(jid), data, { EX: HISTORY_TTL });
-    } else {
-      await cli.set(histKey(jid), data);
-    }
-  } catch (e) {
-    console.warn('[HIST] save falhou:', e?.message || e);
-  }
-}
+// --- Estado WPP ---
+let sock; let qrCodeData = null; let wppReady = false;
 
-// -------- Delay + status "digitando..." --------
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function sendTypingMessage(sock, jid, message) {
-  try {
-    await sock.presenceSubscribe(jid);
-    await sock.sendPresenceUpdate('composing', jid);
-    const delay = Math.min(3500, Math.max(500, (message || '').length * 25));
-    await sleep(delay);
-    await sock.sendMessage(jid, { text: message });
-  } catch (e) {
-    console.warn('[WPP][typing] falhou, enviando direto:', e?.message || e);
-    try { await sock.sendMessage(jid, { text: message }); } catch (e2) { console.error('[WPP] sendMessage erro:', e2?.message || e2); }
-  } finally {
-    try { await sock.sendPresenceUpdate('paused', jid); } catch (_) {}
-  }
-}
-
-// -------- helpers de texto do WhatsApp --------
-function extractText(message) {
-  return (
-    message?.message?.conversation ||
-    message?.message?.extendedTextMessage?.text ||
-    message?.message?.imageMessage?.caption ||
-    message?.message?.videoMessage?.caption ||
-    ''
-  );
-}
-
-// --- Estado do bot ---
-let sock;
-let qrCodeData = null;
-let wppReady = false;
-
-// --- Inicializa Baileys ---
+// --- Baileys ---
 async function startBaileys() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState('baileys-auth');
     const { version } = await fetchLatestBaileysVersion();
-
-    sock = makeWASocket({
-      version,
-      auth: state,
-      printQRInTerminal: false,
-    });
+    sock = makeWASocket({ version, auth: state, printQRInTerminal: false });
 
     sock.ev.on('connection.update', (update) => {
       const { qr, connection, lastDisconnect } = update;
-
-      if (qr) {
-        qrCodeData = qr;
-        wppReady = false;
-        console.log('[WPP] QRCode gerado');
-      }
-      if (connection === 'open') {
-        console.log('[WPP] Conectado com sucesso');
-        qrCodeData = null;
-        wppReady = true;
-      }
-      if (connection === 'close') {
-        console.log('[WPP] Conexão fechada, tentando reconectar...', lastDisconnect?.error?.message || '');
-        startBaileys();
-      }
+      if (qr) { qrCodeData = qr; wppReady = false; console.log('[WPP] QRCode gerado'); }
+      if (connection === 'open') { qrCodeData = null; wppReady = true; console.log('[WPP] Conectado com sucesso'); }
+      if (connection === 'close') { console.log('[WPP] Conexão fechada, tentando reconectar...', lastDisconnect?.error?.message || ''); startBaileys(); }
     });
-
     sock.ev.on('creds.update', saveCreds);
 
-    // Recebe mensagens
     sock.ev.on('messages.upsert', async (msg) => {
       if (msg.type !== 'notify') return;
       for (const message of msg.messages) {
         if (!message.message || message.key.fromMe) continue;
-
         const from = message.key.remoteJid;
         const text = extractText(message).trim();
         if (!text) continue;
-
         console.log(`[MSG] ${from}: ${text}`);
 
         const history = await loadHistory(from);
-
         const system = buildSystemPrompt();
         const hints = [];
         if (isProductQuery(text)) {
-          hints.push(
-            `ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva). Responda como PRODUTO (e-commerce), não como serviço. ` +
-            `Se fizer sentido, mencione pagamento na entrega (COD) e envio de forma objetiva.`
-          );
+          hints.push(`ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva). Responda como PRODUTO (e-commerce), não como serviço. Se fizer sentido, mencione envio e COD.`);
         }
 
         const messages = [
@@ -422,30 +284,24 @@ async function startBaileys() {
           const completion = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo',
             messages,
-            temperature: 0.6,
+            temperature: 0.6
           });
 
-const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
-let polished = polishReply(reply, text);
+          const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
+          let polished = polishReply(reply, text);
+          if (isPriceQuery(text)) polished = composePriceReply(text);
 
-// Preço: nunca deixe o modelo inventar valores
-if (isPriceQuery(text)) {
-  polished = composePriceReply(text);
-}
+          await sendTypingMessage(sock, from, polished);
 
-await sendTypingMessage(sock, from, polished);
+          try {
+            if ((isBuyIntent(text) || isPriceQuery(text)) && !replyHasURL(polished)) {
+              const tierUrl = tierURLFromText(text) || PRICING_DEFAULT_URL;
+              if (tierUrl) await sendCheckoutIfReady(sock, from, tierUrl);
+            }
+          } catch (e) { console.warn('[CTA] falhou ao enviar checkout:', e?.message || e); }
 
-try {
-  if ((isBuyIntent(text) || isPriceQuery(text)) && !replyHasURL(polished)) {
-    const tierUrl = tierURLFromText(text) || PRICING_DEFAULT_URL;
-    if (tierUrl) await sendCheckoutIfReady(sock, from, tierUrl);
-  }
-} catch (e) {
-  console.warn('[CTA] falhou ao enviar checkout:', e?.message || e);
-}
-
-const newHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: polished }];
-await saveHistory(from, newHist);
+          const newHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: polished }];
+          await saveHistory(from, newHist);
         } catch (err) {
           console.error('[GPT] Erro:', err?.message || err);
           await sendTypingMessage(sock, from, '⚠️ Desculpe, ocorreu um erro ao processar sua mensagem.');
@@ -456,59 +312,26 @@ await saveHistory(from, newHist);
     console.error('[BOOT][ERR]', err);
   }
 }
-
-// --- Inicializa ---
 startBaileys();
 
 // --- Express ---
 const app = express();
-
-// Healthcheck
 app.get('/health', (_, res) => res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData }));
-
-// Versão (debug)
 const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
 app.get('/version', (_req, res) => res.json({ ok: true, build: BUILD_TAG }));
-
-// JSON da Lívia — verificação rápida
 app.get('/livia-info', (_req, res) => {
   const loaded = !!LIVIA && Object.keys(LIVIA || {}).length > 0;
   res.json({ loaded, path: LIVIA_CONFIG_PATH, name: LIVIA?.name || null, version: LIVIA?.version || null });
 });
-
-// Redis ping (debug)
 app.get('/redis-ping', async (_req, res) => {
-  try {
-    const cli = await getRedis();
-    if (!cli) return res.json({ ok: false, msg: 'REDIS_URL não setada' });
-    const pong = await cli.ping();
-    res.json({ ok: true, pong, ttl: HISTORY_TTL });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
+  try { const cli = await getRedis(); if (!cli) return res.json({ ok: false, msg: 'REDIS_URL não setada' }); const pong = await cli.ping(); res.json({ ok: true, pong, ttl: HISTORY_TTL }); }
+  catch (e) { res.status(500).json({ ok: false, error: e?.message || String(e) }); }
 });
-
-// QR em PNG
-app.get('/qr', async (_req, res) => {
-  if (!qrCodeData) return res.status(400).json({ error: 'QR não disponível' });
-  res.setHeader('Content-Type', 'image/png');
-  res.send(await qrcode.toBuffer(qrCodeData));
-});
-
-// QR em página HTML
+app.get('/qr', async (_req, res) => { if (!qrCodeData) return res.status(400).json({ error: 'QR não disponível' }); res.setHeader('Content-Type', 'image/png'); res.send(await qrcode.toBuffer(qrCodeData)); });
 app.get('/qr-page', async (_req, res) => {
   if (!qrCodeData) return res.send('<h1>✅ WhatsApp conectado!</h1>');
   const qrPng = await qrcode.toDataURL(qrCodeData);
-  res.send(`
-    <html>
-      <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
-        <h2>Escaneie o QR Code abaixo</h2>
-        <img src="${qrPng}" width="300" height="300"/>
-      </body>
-    </html>
-  `);
+  res.send(`<html><body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;"><h2>Escaneie o QR Code abaixo</h2><img src="${qrPng}" width="300" height="300"/></body></html>`);
 });
-
-// Porta do Railway
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
