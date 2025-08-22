@@ -289,7 +289,9 @@ async function startBaileys() {
 
           const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
           let polished = polishReply(reply, text);
-          if (isPriceQuery(text)) polished = composePriceReply(text);
+if (isPriceQuery(text)) {
+  polished = 'Hoje estamos com preço promocional: de R$ 197,00 por R$ 150,00. O estoque está acabando, Quer o link para aproveitar a oferta?';
+}
 
           await sendTypingMessage(sock, from, polished);
 
