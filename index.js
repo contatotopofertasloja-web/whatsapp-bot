@@ -140,35 +140,6 @@ function tierURLFromText(_txt = '') {
   return PRICING_DEFAULT_URL || 'https://entrega.logzz.com.br/pay/memmpxgmg/progcreme150';
 }
 
-// --- Preços canônicos (anti-alucinação) ---
-function formatBRL(n){ return `R$ ${Number(n).toFixed(2).replace('.', ',')}`; }
-function tierEntriesWithPrice(){
-  const out = [];
-  for (const [key, tier] of Object.entries(PRICING_TIERS || {})) {
-    const blob = `${key} ${tier?.label || ''} ${tier?.checkout_url || ''}`.toLowerCase();
-    const price = blob.includes('197') ? 197 : blob.includes('170') ? 170 : blob.includes('150') ? 150 : null;
-    out.push({ key, price, url: tier?.checkout_url || null, label: tier?.label || key });
-  }
-  return out.filter(x => x.url);
-}
-function canonicalPriceText(){
-  const items = tierEntriesWithPrice(); if (!items.length) return '';
-  const parts = [];
-  if (items.find(i => i.price === 197)) parts.push(`${formatBRL(197)} (padrão)`);
-  if (items.find(i => i.price === 170)) parts.push(`${formatBRL(170)} (promo)`);
-  if (items.find(i => i.price === 150)) parts.push(`${formatBRL(150)} (à vista/Pix)`);
-  return `Temos estas opções: ${parts.join(' · ')}.`;
-}
-function composePriceReply(userText){
-  const base = canonicalPriceText();
-  const follow =
-    /pix|à vista|a vista|avista|dinheiro/i.test(userText)
-      ? `Se for no Pix/à vista, posso te mandar o link de ${formatBRL(150)}.`
-      : /promo|desconto|cupom|oferta|170/i.test(userText)
-      ? `Com promoção sai por ${formatBRL(170)}. Quer o link?`
-      : `Qual opção você prefere para eu te enviar o link?`;
-  return `${base} ${follow}`;
-}
 
 // --- Anti-repetição + fechamento inteligente ---
 function isDeliveryQuery(t){ return /\b(entrega|prazo|frete|chega|demora)\b/i.test(t||''); }
