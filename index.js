@@ -39,12 +39,45 @@ const LIVIA = safeLoadJSON(LIVIA_CONFIG_PATH) || {};
 const identityStrict = LIVIA.identity_strict || {};
 const persona = LIVIA.persona || {};
 
+
 // prompt padrão se não houver JSON
 function buildSystemPrompt() {
   const name = identityStrict.always_name || 'Lívia Martins';
   const forbidBot = identityStrict.never_reveal_bot !== false; // default true
   const city = persona.city || 'Brasília';
   const brand = persona.brand || 'TopOfertas Express';
+
+  return [
+    `Você é ${name}, vendedora da ${brand}, em ${city}.`,
+    `Fale de forma humana, calorosa e objetiva; tom de consultora-amiga.`,
+    forbidBot ? `Nunca diga que é bot, IA ou atendente virtual.` : ``,
+    // âncora de produto
+    `Você vende um produto cosmético chamado "${PRODUCT_NAME}" no modelo e-commerce, com envio para todo o Brasil.`,
+    `Nunca ofereça serviço presencial ou agendamento de salão. Se perguntarem como serviço, explique gentilmente que é um produto para usar em casa.`,
+    `Quando perguntarem "tem progressiva?" ou variações, trate como "${PRODUCT_NAME}" (produto) e não como serviço.`,
+    `Se possível, conduza para o fechamento: tirar dúvidas rápidas, informar formas de pagamento (incluindo COD, se aplicável), pedir CEP quando fizer sentido.`,
+  ].filter(Boolean).join(' ');
+}
+
+// --- Produto foco (fallback para Progressiva Vegetal) ---
+const productFocus =
+  LIVIA?.product_focus
+  || LIVIA?.product
+  || (LIVIA?.product_catalog?.[LIVIA?.product_catalog?.default_product_key])
+  || { name: 'Progressiva Vegetal', type: 'cosmético', payment: 'Pagamento na Entrega (COD)' };
+
+const PRODUCT_NAME = productFocus.name || 'Progressiva Vegetal';
+
+// Sinônimos que a cliente pode usar pra "progressiva"
+const PRODUCT_SYNONYMS = (productFocus.synonyms && Array.isArray(productFocus.synonyms) && productFocus.synonyms.length)
+  ? productFocus.synonyms
+  : ['progressiva vegetal', 'progressiva', 'escova progressiva', 'alisamento', 'alisante', 'botox capilar vegetal'];
+
+// Classificador localzinho (não-IA) pra detectar intenção de produto
+function isProductQuery(txt = '') {
+  const s = (txt || '').toLowerCase();
+  return PRODUCT_SYNONYMS.some(w => s.includes(w));
+}
 
   // Regras essenciais (curtas e seguras)
   return [
@@ -209,9 +242,24 @@ async function startBaileys() {
         const history = await loadHistory(from);
 
         // Monta mensagens para o GPT (com histórico)
-        const system = buildSystemPrompt();
-        const messages = [{ role: 'system', content: system }, ...history, { role: 'user', content: text }];
+       const system = buildSystemPrompt();
+const hints = [];
 
+if (isProductQuery(text)) {
+  hints.push(
+    `ATENÇÃO: cliente perguntou sobre "${PRODUCT_NAME}" (progressiva). Responda como produto (e-commerce), NÃO como serviço. ` +
+    `Se for natural mencionar pagamento na entrega (COD) e envio, faça de forma objetiva.`
+  );
+}
+
+const messages = [
+  { role: 'system', content: system },
+  ...hints.map(h => ({ role: 'system', content: h })),
+  ...history,
+  { role: 'user', content: text }
+];
+
+       
         try {
           const completion = await openai.chat.completions.create({
             // use o modelo que preferir/tem acesso; mantendo compat com seu código atual
