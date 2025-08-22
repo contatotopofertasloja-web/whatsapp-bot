@@ -434,6 +434,7 @@ if (isPriceQuery(text)) {
 }
 
 await sendTypingMessage(sock, from, polished);
+
 try {
   if ((isBuyIntent(text) || isPriceQuery(text)) && !replyHasURL(polished)) {
     const tierUrl = tierURLFromText(text) || PRICING_DEFAULT_URL;
@@ -443,9 +444,8 @@ try {
   console.warn('[CTA] falhou ao enviar checkout:', e?.message || e);
 }
 
-
-          const newHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: reply }];
-          await saveHistory(from, newHist);
+const newHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: polished }];
+await saveHistory(from, newHist);
         } catch (err) {
           console.error('[GPT] Erro:', err?.message || err);
           await sendTypingMessage(sock, from, '⚠️ Desculpe, ocorreu um erro ao processar sua mensagem.');
