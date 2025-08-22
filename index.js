@@ -220,6 +220,12 @@ const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
 function pick(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
 
 // helpers de pós-processamento
+// Abridores leves (opcionais)
+const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
+
+// === Helpers de pós-processamento (sem conflitos) ===
+function pickOne(arr){ return arr[Math.floor(Math.random() * arr.length)] || ''; }
+
 function stripRepeatedClosers(txt){
   let out = txt || '';
   for (const c of GENERIC_CLOSERS){
@@ -228,12 +234,14 @@ function stripRepeatedClosers(txt){
   }
   return out;
 }
+
 function limitEmojis(txt){
   const all = (txt||'').match(/\p{Extended_Pictographic}/gu) || [];
   if (all.length <= 1) return txt;
   let kept = false;
   return (txt||'').replace(/\p{Extended_Pictographic}/gu, () => kept ? '' : (kept = true, ''));
 }
+
 function limitSentences(txt, max = 2){
   const parts = (txt||'').split(/(?<=\.)\s+/).filter(Boolean);
   return parts.slice(0, max).join(' ').trim() || txt;
@@ -241,6 +249,29 @@ function limitSentences(txt, max = 2){
 
 function polishReply(reply, userText){
   let out = reply || '';
+
+  // remove “posso te enviar o link...” quando não é CTA
+  if (!isBuyIntent(userText)) {
+    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
+  }
+
+  // pós-processamento
+  out = stripRepeatedClosers(out);
+  out = limitSentences(out, 2);
+  out = limitEmojis(out);
+
+  // abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
+  if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
+    out = `${pickOne(SOFT_OPENERS)} ${out}`.trim();
+  }
+
+  const closing = smartClosingQuestion(userText) || pickOne(SOFT_CLOSERS);
+  if (closing && !/[?!]$/.test(out)) {
+    out = `${out} ${closing}`;
+  }
+
+  return out;
+}
 
   // remove “posso te enviar o link...” quando não é CTA
   if (!isBuyIntent(userText)) {
