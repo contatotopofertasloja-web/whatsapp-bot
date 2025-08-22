@@ -270,18 +270,21 @@ async function startBaileys() {
           { role: 'system', content: system },
           ...hints.map(h => ({ role: 'system', content: h })),
           ...history,
-          { role: 'user', content: text }
+          { role: 'user', content: text } 
         ];
 
         try {
           // Defina antes no topo, perto do OpenAI:
-// const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+console.log('[GPT] Model em uso:', MODEL);
+
 
 const completion = await openai.chat.completions.create({
   model: MODEL,
   messages,
   temperature: 0.6
 });
+
 
 
           const reply = (completion.choices?.[0]?.message?.content || '').trim() || 'Certo! Como posso te ajudar?';
