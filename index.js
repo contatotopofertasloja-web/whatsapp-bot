@@ -216,7 +216,7 @@ const SOFT_CLOSERS = [
 // Abridores leves (opcionais)
 const SOFT_OPENERS = ['Opa!', 'Beleza 🙂', 'Show!', 'Claro!', 'Perfeito.'];
 
-// util de pick (tenha só UMA no arquivo)
+// util de pick (mantenha apenas UMA no arquivo)
 function pick(a){ return a[Math.floor(Math.random() * a.length)] || ''; }
 
 // helpers de pós-processamento
@@ -234,13 +234,36 @@ function limitEmojis(txt){
   let kept = false;
   return (txt||'').replace(/\p{Extended_Pictographic}/gu, () => kept ? '' : (kept = true, ''));
 }
-function limitSentences(txt, max = 2){ // já fixa 2 frases
+function limitSentences(txt, max = 2){
   const parts = (txt||'').split(/(?<=\.)\s+/).filter(Boolean);
   return parts.slice(0, max).join(' ').trim() || txt;
 }
 
 function polishReply(reply, userText){
   let out = reply || '';
+
+  // remove “posso te enviar o link...” quando não é CTA
+  if (!isBuyIntent(userText)) {
+    out = out.replace(/(?:posso te enviar o link[^.]*\.)/gi, '').trim();
+  }
+
+  out = stripRepeatedClosers(out);
+  out = limitSentences(out, 2);
+  out = limitEmojis(out);
+
+  // abridor leve às vezes (se ainda não começou com oi/olá/boa/hey)
+  if (Math.random() < 0.35 && !/^(olá|oi|boa|hey)/i.test(out)) {
+    out = `${pick(SOFT_OPENERS)} ${out}`.trim();
+  }
+
+  let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+  if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
+let closing = smartClosingQuestion(userText) || pick(SOFT_CLOSERS);
+if (closing && !/[?!]$/.test(out)) out = `${out} ${closing}`;
+
+return out;
+}
+
 
   // Se não for CTA, remove “posso te enviar o link...” que o modelo às vezes adiciona
   if (!isBuyIntent(userText)) {
