@@ -79,6 +79,63 @@ function sendCheckoutIfReady(sock, jid, url = PRICING_DEFAULT_URL) {
   const msg = formatCheckoutCTA(url);
   return sendTypingMessage(sock, jid, msg);
 }
+// --- Intenções de compra e escolha de tier ---
+function isBuyIntent(txt = '') {
+  const s = (txt || '').toLowerCase();
+  const kws = [
+    'comprar', 'quero comprar', 'adquirir', 'finalizar', 'fechar',
+    'link', 'checkout', 'me manda o link', 'manda o link',
+    'preço', 'valor', 'quanto custa', 'quanto sai',
+    'desconto', 'promoção', 'pagar', 'pagamento'
+  ];
+  return kws.some(k => s.includes(k));
+}
+
+function normalize(str = '') {
+  return String(str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '');
+}
+
+// tenta descobrir o tier pelo texto (ex.: "quero 2", "combo 3", "kit 2")
+function tierURLFromText(txt = '') {
+  const s = normalize(txt);
+  const keys = Object.keys(PRICING_TIERS || {});
+  if (!keys.length) return null;
+
+  // número isolado
+  const mNum = s.match(/\b([1-9])\b/);
+  if (mNum) {
+    const n = mNum[1];
+    const byNum = keys.find(k => normalize(k).includes(n));
+    if (byNum) return PRICING_TIERS[byNum]?.checkout_url || null;
+  }
+
+  // "kit 2" / "combo 3"
+  const mKit = s.match(/\b(kit|combo)\s*([1-9])\b/);
+  if (mKit) {
+    const n = mKit[2];
+    const byKit = keys.find(k => normalize(k).includes(n));
+    if (byKit) return PRICING_TIERS[byKit]?.checkout_url || null;
+  }
+
+  // casa por nome do tier
+  for (const k of keys) {
+    if (s.includes(normalize(k))) {
+      const url = PRICING_TIERS[k]?.checkout_url || null;
+      if (url) return url;
+    }
+  }
+
+  // fallback
+  return PRICING_DEFAULT_URL || null;
+}
+
+function replyHasURL(txt = '') {
+  return /https?:\/\/\S+/i.test(txt || '');
+}
+
 // --- Anti-repetição e fechamento inteligente ---
 function isDeliveryQuery(t){ return /\b(entrega|prazo|frete|chega|demora)\b/i.test(t||''); }
 function isBenefitsQuery(t){ return /\b(benef[ií]cios?|vantagens?|diferenciais?)\b/i.test(t||''); }
