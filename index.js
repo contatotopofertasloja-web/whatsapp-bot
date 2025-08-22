@@ -247,6 +247,17 @@ const app = express();
 app.get('/health', (_, res) =>
   res.json({ ok: true, wppReady, qrAvailable: !!qrCodeData })
 );
+// JSON da Lívia — verificação rápida
+app.get('/livia-info', (_req, res) => {
+  const loaded = !!LIVIA && Object.keys(LIVIA || {}).length > 0;
+  res.json({
+    loaded,
+    path: LIVIA_CONFIG_PATH,
+    name: LIVIA?.name || null,
+    version: LIVIA?.version || null
+  });
+});
+
 // Versão em execução (debug)
 const BUILD_TAG = process.env.BUILD_TAG || new Date().toISOString();
 app.get('/version', (_req, res) => {
